@@ -51,7 +51,7 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 	}
 
 	cmd := exec.Command(command, term.args...)
-	cmd.Env = buildEnv(term.env)
+	cmd.Env = buildEnv(command, term.env)
 	term.cmd = cmd
 
 	var ptmx *os.File
@@ -79,21 +79,34 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 }
 
 // buildEnv composes the process environment: the current environment,
-// a TERM value (defaulting to "xterm") and the configured overrides.
+// a TERM value (defaulting to "xterm-256color") and the configured overrides.
 // Overrides listed later win over the defaults and never duplicate keys.
-func buildEnv(extra []string) []string {
-	termValue := "xterm"
+//
+// For bash sessions it additionally injects PROMPT_COMMAND so that the mouse
+// reporting modes (DECSET 1000/1002/1003/1006) are reset just before every
+// prompt is shown. This cleans up after full-screen TUIs that enable mouse
+// reporting and die (or are killed) without sending the reset sequence:
+// otherwise the shell keeps echoing SGR mouse bytes (ESC[<b;x;yM) caused by
+// clicks, which appear as garbage on the terminal.
+func buildEnv(command string, extra []string) []string {
+	termValue := "xterm-256color"
+	// 默认注入 PROMPT_COMMAND;用户显式配置时以用户为准
+	promptReset := true
 	extras := make([]string, 0, len(extra))
 	for _, kv := range extra {
-		if strings.HasPrefix(kv, "TERM=") {
+		switch {
+		case strings.HasPrefix(kv, "TERM="):
 			termValue = strings.TrimPrefix(kv, "TERM=")
-			continue
+		case strings.HasPrefix(kv, "PROMPT_COMMAND="):
+			promptReset = false
+			extras = append(extras, kv)
+		default:
+			extras = append(extras, kv)
 		}
-		extras = append(extras, kv)
 	}
 
 	original := os.Environ()
-	env := make([]string, 0, len(original)+len(extras)+1)
+	env := make([]string, 0, len(original)+len(extras)+2)
 	for _, kv := range original {
 		if !strings.HasPrefix(kv, "TERM=") {
 			env = append(env, kv)
@@ -101,7 +114,22 @@ func buildEnv(extra []string) []string {
 	}
 	env = append(env, "TERM="+termValue)
 
+	if isBash(command) && promptReset {
+		// bash 每次显示提示符前执行 printf,发送鼠标模式复位序列。
+		// 覆盖 TUI 退出/被杀未复位 ?1000h 等导致鼠标字节被 echo 成乱码的场景。
+		env = append(env,
+			"PROMPT_COMMAND=printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'")
+	}
+
 	return append(env, extras...)
+}
+
+// isBash reports whether the command is the bash shell (interactive
+// sessions; nested bash inherits the injected PROMPT_COMMAND as well).
+func isBash(command string) bool {
+	return command == "bash" ||
+		strings.HasSuffix(command, "/bash") ||
+		strings.HasSuffix(command, "/bash.exe")
 }
 
 // Command returns the command name of the process.

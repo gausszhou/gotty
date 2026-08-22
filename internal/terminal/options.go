@@ -26,7 +26,7 @@ type Options struct {
 	CloseTimeout int `json:"close_timeout" flagName:"close-timeout" flagDescribe:"Time in seconds to force kill process after the session is closed" default:"-1"`
 
 	// Term is the value of the TERM environment variable.
-	// Empty means "xterm".
+	// Empty means "xterm-256color".
 	Term string `json:"term"`
 }
 
@@ -56,7 +56,7 @@ func WithEnv(env []string) Option {
 }
 
 // WithTerm sets the TERM environment variable of the process.
-// An empty value keeps the default ("xterm").
+// An empty value keeps the default ("xterm-256color").
 func WithTerm(term string) Option {
 	return func(t *Terminal) {
 		if term != "" {
