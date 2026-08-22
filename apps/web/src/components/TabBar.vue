@@ -27,10 +27,14 @@
         {{ latency }}ms
       </div>
       <button
-        class="icon-btn"
+        class="lang-switch"
         :title="t('lang.toggle')"
         @click="toggleLang"
-      >中/EN</button>
+      >
+        <span class="lang-item" :class="{ active: lang === 'zh' }">中</span>
+        <span class="lang-sep">/</span>
+        <span class="lang-item" :class="{ active: lang === 'en' }">En</span>
+      </button>
       <button
         class="icon-btn"
         :title="theme === 'light' ? t('theme.toLight') : t('theme.toDark')"
@@ -44,7 +48,7 @@
 import { computed } from 'vue'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
-import { toggleLang, t } from '../utils/i18n'
+import { toggleLang, t, lang } from '../utils/i18n'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
@@ -280,5 +284,35 @@ function stateClass(s: SessionInfo): string {
 .icon-btn:hover {
     background: var(--bg-tab-hover);
     color: var(--fg-bright);
+}
+
+/* 语言开关:中 / EN 分段展示,当前语言高亮,点击切换 */
+.lang-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 2px 6px;
+    line-height: 1;
+    border-radius: 3px;
+    color: var(--fg-dim);
+}
+
+.lang-switch:hover {
+    background: var(--bg-tab-hover);
+}
+
+.lang-item.active {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.lang-sep {
+    color: var(--fg-hint);
+    user-select: none;
 }
 </style>
