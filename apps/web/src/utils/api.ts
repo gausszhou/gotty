@@ -14,10 +14,29 @@ export interface SessionList {
     sessions: SessionInfo[];
 }
 
+export class APIError extends Error {
+    status: number;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.status = status;
+    }
+}
+
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
     const res = await fetch(url, init);
     if (!res.ok) {
-        throw new Error(`request to ${url} failed with status ${res.status}`);
+        // 优先透出服务端 JSON 错误体,如 {"error":"no command given"}
+        let message = `request to ${url} failed with status ${res.status}`;
+        try {
+            const body = await res.json();
+            if (body && typeof body.error === 'string') {
+                message = body.error;
+            }
+        } catch {
+            // 非 JSON 错误体,用默认消息
+        }
+        throw new APIError(res.status, message);
     }
     return res.json() as Promise<T>;
 }
