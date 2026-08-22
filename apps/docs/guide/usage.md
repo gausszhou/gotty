@@ -34,11 +34,12 @@ gotty serve /bin/bash
 gotty serve --port 8080 htop
 ```
 
-不跟命令启动则进入网关模式，会话命令需要由 REST API 显式指定：
+不跟命令启动则回退到登录 shell（`$SHELL`，未设置时用 `/bin/sh`）
+作为默认命令，页面打开即可用：
 
 ```bash
-gotty serve --port 8080
-curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'
+gotty serve --port 8080            # 默认会话命令 = $SHELL
+curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'   # 显式命令优先
 ```
 
 页面会创建一个运行该命令的会话并附着到它。会话 ID 会写入地址栏
@@ -51,7 +52,6 @@ curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'
 | --- | --- |
 | `-p, --port` | 监听端口（默认 `8080`） |
 | `-a, --address` | 监听地址（默认 `0.0.0.0`） |
-| `-c, --credential` | Basic Auth 凭据，格式 `用户名:密码` |
 | `-w, --permit-write` | 允许浏览器向终端写输入（默认只读） |
 | `--reconnect` | 启用客户端断线重连（`--reconnect-time` 控制间隔） |
 | `--max-session` | 最大并发会话数（默认 0 = 不限） |
@@ -61,12 +61,13 @@ curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'
 | `--title-format` | 页面标题格式，支持模板变量（见下） |
 | `--term` | 终端类型（默认 `xterm`） |
 | `--close-signal` | 关闭会话时发送给进程的信号（默认 SIGHUP） |
+| `--log-file` | 服务端日志落盘路径（默认 `~/.gotty/logs/gotty.log`，追加；空值仅控制台） |
 | `--close-timeout` | 发信号后强制 kill 的等待秒数（-1 = 禁用） |
 
-例如，启用只读会话 + Basic Auth：
+例如，启用可写会话：
 
 ```bash
-gotty -w -c "user:pass" /bin/bash
+gotty -w /bin/bash
 ```
 
 标题格式支持命令名与主机名模板变量，默认如下：
@@ -77,7 +78,7 @@ GoTTY - {{ .command }}@{{ .hostname }}
 
 ## 配置文件
 
-默认读取 `~/.gotty`，可用 `--config` 指定（也支持 `gotty --config <path> serve`
+默认读取 `~/.gotty/config.json`，可用 `--config` 指定（也支持 `gotty --config <path> serve`
 这种根命令写法，或 `GOTTY_CONFIG` 环境变量）。JSON 格式，等价于命令行
 参数；命令行参数优先于配置文件，配置文件优先于 `GOTTY_*` 环境变量。
 未知的键会被忽略，旧版本写的配置文件可以继续使用：
@@ -86,7 +87,6 @@ GoTTY - {{ .command }}@{{ .hostname }}
 {
     "port": "8080",
     "permit_write": false,
-    "credential": "user:pass",
     "timeout": 0,
     "max_session": 0
 }

@@ -19,7 +19,7 @@ features:
     details: 只要浏览器支持 WebSocket，就能访问终端，Windows / macOS / Linux 通吃。
   - icon: ⚡
     title: 现代前端技术栈
-    details: 前端使用 Vite + Vue 3 + xterm.js v6（含 WebGL 渲染与多行复制粘贴）。
+    details: 前端使用 Vite + Vue 3 + xterm.js v5（含 WebGL 渲染与多行复制粘贴）。
   - icon: 🛡️
     title: 可选的访问控制
     details: 支持 Basic Auth、随机 URL 与 TLS（含双向 TLS），按需加固访问安全。

@@ -13,7 +13,7 @@
 ### 1.2 前端现代化
 
 - Vite + Vue 3 + TypeScript
-- xterm.js v6 + WebGL 渲染 + FitAddon
+- xterm.js v5（@xterm/xterm 5.5） + WebGL 渲染 + FitAddon
 - 二进制 WebSocket 协议（无 base64）
 
 ### 1.3 架构重构
@@ -34,7 +34,7 @@ gotty/
 │   └── serve.go                 #   serve 子命令：启动服务
 │
 ├── apps/
-│   └── web/                     # 前端 (Vite + Vue 3 + xterm.js v6)
+│   └── web/                     # 前端 (Vite + Vue 3 + xterm.js v5（@xterm/xterm 5.5）)
 │       ├── index.html           # Vite dev 入口
 │       ├── vite.config.ts
 │       ├── package.json
@@ -46,12 +46,10 @@ gotty/
 │       │   └── utils/
 │       │       ├── webtty.ts    # 二进制协议
 │       │       └── websocket.ts # WS BinaryMessage 收发
-│       └── static/              # Go 模板 + CSS + 图标
-│           ├── index.html       # Go template ({{ .title }})
-│           ├── favicon.png
-│           └── css/
-│               ├── index.css
-│               └── xterm_customize.css
+│       ├── public/             # 原样复制到构建产物
+│       │   └── favicon.png
+│       └── src/style/           # 唯一全局 CSS(内联进 main.js)
+│           └── index.css
 │
 ├── internal/
 │   ├── api/                     # 接入层
@@ -210,13 +208,21 @@ const (
 会话管理
   POST   /api/sessions              创建会话
   GET    /api/sessions              列出所有会话
+  GET    /api/sessions/history      列出持久化的会话历史(跨重启)
   GET    /api/sessions/:id          查看会话详情
+  PUT    /api/sessions/:id/title    重命名会话(持久化,活会话与历史均可)
   DELETE /api/sessions/:id          销毁会话
 
 会话控制
   POST   /api/sessions/:id/resize   调整终端大小
   POST   /api/sessions/:id/signal   发送信号 (SIGINT, SIGKILL...)
 ```
+
+> 实施注记：会话历史由 `session.Store` 持久化，默认实现为
+> `FileStore`（JSON 文件，`--session-file`，默认
+> `~/.gotty.sessions.json`），原子写（tmp+rename）。销毁/空闲超时
+> 的会话仅从注册表移除，记录保留在历史中；前端不保留任何本地持久化，
+> 历史一律从服务端获取。
 
 ### 5.2 WebSocket
 
@@ -281,8 +287,6 @@ WebSocket 使用 BinaryMessage 帧，终端输出直接传输原始字节（无 
 
 ```
 客户端连接 WS（subprotocol: "webtty"）
-→ 发送 init JSON: {"Arguments":"", "AuthToken":""}
-→ 服务端校验 auth_token
 → 开始双向数据传输
 ```
 
@@ -431,8 +435,8 @@ make
 | `--random-url` | 会话 ID 已承担"难猜 URL"职责（`?id=xxx`） | REST API + 会话 ID |
 | `--once` | 与多会话服务模式冲突 | `--max-session 1` |
 | `--permit-arguments` | 命令与参数改由 REST 创建时指定 | `POST /api/sessions` |
-| `--tls-ca-crt` / TLS 客户端证书 | 减少配置面，Basic Auth 已覆盖鉴权场景 | `--credential` |
-| `--index` | 自定义页面模板场景罕见 | 直接修改 `apps/web/static/index.html` |
+| `--tls-ca-crt` / TLS 客户端证书 | 减少配置面 | 无（如需鉴权可自行置于反向代理后） |
+| `--index` | 自定义页面模板场景罕见 | 直接修改 `apps/web/index.html` |
 
 旧配置文件中的这些键会被 `encoding/json` 静默忽略，无需迁移。
 
@@ -442,10 +446,8 @@ make
   附着）超过 N 秒被销毁"，0 表示禁用。由 `session.Manager` 的清扫循环
   实现（`DestroyExpired`，每秒一轮）。
 - **`max_connection` → `max-session`**：限制并发存活会话数，0 表示不限。
-- **WS 认证**：沿用 webtty 握手协议 —— 首帧二进制 JSON
-  `{"Arguments":"","AuthToken":""}`，`AuthToken` 与 `credential` 不一致
-  时拒绝连接；HTTP 侧 Basic Auth 不包裹 `/ws`（浏览器 WebSocket 携带
-  Authorization 头受限）。
+- **WS 无认证握手**：连接建立后直接附着，不再有 init 帧与 token
+  校验；访问控制交由部署层（反向代理、TLS）决定。
 - **单客户端附着**：一个会话同一时刻只允许一个客户端附着（第二个附着
   返回 WS 1013 *Try Again Later*），与状态机 `IDLE/RUNNING` 一致；
   断线后 PTY 存活，可用同一 `?id=` 重连。

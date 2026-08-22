@@ -40,9 +40,10 @@ The session id is kept in the URL (`?id=xxx`), so reloading the page
 rejoins the same running session; if the session is gone, a new one is
 created.
 
-Starting without a command runs GoTTY in gateway mode: every session must
-then specify its command via the REST API
-(`curl -X POST localhost:8080/api/sessions -d '{"command":"top"}'`).
+Starting without a command (`gotty serve`) falls back to the login shell
+(`$SHELL`, or `/bin/sh` when unset) as the default session command, so the
+page always opens with a usable terminal. An explicit command in
+`POST /api/sessions` always takes precedence.
 
 ## Options
 
@@ -50,7 +51,6 @@ then specify its command via the REST API
 -a, --address string        IP address to listen (default: "0.0.0.0") [$GOTTY_ADDRESS]
 -p, --port string           Port number to listen (default: "8080") [$GOTTY_PORT]
 -w, --permit-write          Permit clients to write to the TTY (BE CAREFUL) [$GOTTY_PERMIT_WRITE]
--c, --credential string     Credential for Basic Authentication (ex: user:pass, default disabled) [$GOTTY_CREDENTIAL]
     --title-format string   Title format of browser window (default: "GoTTY - {{ .command }}@{{ .hostname }}") [$GOTTY_TITLE_FORMAT]
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
@@ -63,15 +63,16 @@ then specify its command via the REST API
 -t, --tls                   Enable TLS/SSL [$GOTTY_TLS]
     --tls-crt string        TLS/SSL certificate file path (default: "~/.gotty.crt") [$GOTTY_TLS_CRT]
     --tls-key string        TLS/SSL key file path (default: "~/.gotty.key") [$GOTTY_TLS_KEY]
+    --log-file string       Server log file path (default: "~/.gotty/logs/gotty.log", empty = console only) [$GOTTY_LOG_FILE]
     --close-signal int      Signal sent to the command process when the session is closed (default: 1 = SIGHUP) [$GOTTY_CLOSE_SIGNAL]
     --close-timeout int     Time in seconds to force kill process after the session is closed (default: -1 = disabled) [$GOTTY_CLOSE_TIMEOUT]
-    --config string         Config file path (default: "~/.gotty") [$GOTTY_CONFIG]
+    --config string         Config file path (default: "~/.gotty/config.json") [$GOTTY_CONFIG]
 -v, --version               print the version
 ```
 
 ### Config File
 
-GoTTY loads a JSON profile file by default from `~/.gotty` when it exists.
+GoTTY loads a JSON profile file by default from `~/.gotty/config.json` when it exists.
 The path can be changed with `--config` (also honored on the root command,
 e.g. `gotty --config ./gotty.json serve`) or the `GOTTY_CONFIG` environment
 variable. Command line flags take precedence over config file values, which
@@ -85,9 +86,16 @@ take precedence over `GOTTY_*` environment variables.
 }
 ```
 
-See the [`.gotty`](.gotty) file in this repository for the list of
-configuration options. Unknown keys are ignored so that config files written
-for older GoTTY versions keep working.
+Config files are read from `~/.gotty/config.json` by default (override
+with `--config FILE`). Unknown keys are ignored so that config files
+written for older GoTTY versions keep working.
+
+### Server Log
+
+The server log is written to both the console and
+`~/.gotty/logs/gotty.log` (append mode), so connection issues can be
+checked later. Use `--log-file <path>` to change the path, or an empty
+value to keep the console-only behavior.
 
 ### Security Options
 
@@ -95,11 +103,6 @@ By default, GoTTY doesn't allow clients to send any keystrokes or commands
 except terminal window resizing. When you want to permit clients to write
 input to the TTY, add the `-w` option. However, accepting input from remote
 clients is dangerous for most commands.
-
-To restrict client access, use the `-c` option to enable basic
-authentication. With this option, clients need to input the specified
-username and password to reach the server. Note that the credential will be
-transmitted between the server and clients in plain text.
 
 All traffic between the server and clients is NOT encrypted by default.
 When you send secret information through GoTTY, we strongly recommend you
@@ -138,9 +141,11 @@ $ tmux new -A -s gotty
 ### Sessions
 
 ```
-POST   /api/sessions               create a session (empty command uses the CLI command)
+POST   /api/sessions               create a session (empty command uses the default command)
 GET    /api/sessions               list all sessions
+GET    /api/sessions/history       list persisted session history
 GET    /api/sessions/:id           session detail
+PUT    /api/sessions/:id/title     rename a session (persisted, alive or historical)
 DELETE /api/sessions/:id           destroy a session
 POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
@@ -163,8 +168,8 @@ $ curl localhost:8080/api/sessions
 WS /ws?session_id=xxx   attach to an existing session
 ```
 
-The first message must be a binary JSON init frame `{"Arguments":"","AuthToken":""}`
-(subprotocol `webtty`). Afterwards, messages are binary frames of the form
+The connection is established with subprotocol `webtty` (no handshake
+frame required). Messages are binary frames of the form
 `[type byte][payload]`:
 
 | type | client → server | server → client |
