@@ -18,6 +18,9 @@ var (
 	ErrNotFound = errors.New("session not found")
 	// ErrTooManySessions is returned when the manager is full.
 	ErrTooManySessions = errors.New("too many sessions")
+	// ErrNoCommand is returned when a fresh session (no record to
+	// resurrect) is created without a command.
+	ErrNoCommand = errors.New("no command given")
 )
 
 // TerminalFactory creates a Terminal. The default factory wraps
@@ -107,15 +110,64 @@ func parseSignal(value int, fallback syscall.Signal) syscall.Signal {
 	return fallback
 }
 
-// Create starts a new session running command.
+// Create starts a new session running command, letting the server
+// generate the session id (legacy clients that do not send one).
 // termOpts are applied on top of the manager's base terminal options
 // (e.g. terminal.WithInitialSize for the requested PTY size).
 func (m *Manager) Create(command string, args []string, termOpts ...terminal.Option) (*Session, error) {
+	sess, _, err := m.CreateWithID("", command, args, termOpts...)
+	return sess, err
+}
+
+// CreateWithID starts a session under a client-chosen id with
+// idempotent and resurrect semantics:
+//
+//   - a session with the id already alive is returned unchanged
+//     (created = false) — the request is a no-op;
+//   - otherwise, if the store holds a record for the id, the session is
+//     **resurrected**: the recorded command/args are used to rebuild a
+//     session with the same id and run_count is incremented;
+//   - otherwise a fresh session is started with the given id.
+//
+// An empty id makes the server generate one (legacy clients).
+// The id must be format-validated by the caller before calling this.
+func (m *Manager) CreateWithID(id, command string, args []string, termOpts ...terminal.Option) (*Session, bool, error) {
 	m.mu.Lock()
+
+	// 幂等:同 id 已存活 → 直接返回现有会话
+	// (进程已退出的会话不算存活,走记录复活路径)
+	if id != "" {
+		if existing, ok := m.sessions[id]; ok && !existing.Exited() {
+			m.mu.Unlock()
+			return existing, false, nil
+		}
+	}
 
 	if m.maxSession > 0 && len(m.sessions) >= m.maxSession {
 		m.mu.Unlock()
-		return nil, ErrTooManySessions
+		return nil, false, ErrTooManySessions
+	}
+
+	// 复活:记录存在 → 用记录的 command/args 重建同 id 会话
+	var record Metadata
+	recorded := false
+	if id != "" {
+		if meta, ok := m.store.Get(id); ok {
+			record = meta
+			command = record.Command
+			args = record.Args
+			recorded = true
+		}
+	}
+
+	if id == "" {
+		id = utils.RandomString(16)
+	}
+
+	// 全新会话必须携带命令;复活会话在下方使用记录命令
+	if !recorded && command == "" {
+		m.mu.Unlock()
+		return nil, false, ErrNoCommand
 	}
 
 	opts := make([]terminal.Option, 0, len(m.baseOpts)+len(termOpts))
@@ -125,21 +177,46 @@ func (m *Manager) Create(command string, args []string, termOpts ...terminal.Opt
 	term, err := m.factory(command, args, opts...)
 	if err != nil {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("failed to create terminal: %w", err)
+		return nil, false, fmt.Errorf("failed to create terminal: %w", err)
 	}
 
-	s := New(utils.RandomString(16), term)
+	s := New(id, term)
 	m.sessions[s.ID()] = s
-	_ = m.store.Record(Metadata{
-		ID:        s.ID(),
-		Command:   command,
-		Args:      args,
-		State:     s.State().String(),
-		CreatedAt: s.CreatedAt().Unix(),
-	})
+
+	meta := Metadata{
+		ID:      s.ID(),
+		Command: command,
+		Args:    args,
+		State:   s.State().String(),
+	}
+	if recorded {
+		// 复活:保留原记录的创建时间与标题,运行次数 +1
+		meta.CreatedAt = record.CreatedAt
+		meta.Title = record.Title
+		meta.RunCount = record.RunCount + 1
+	} else {
+		meta.CreatedAt = s.CreatedAt().Unix()
+	}
+	_ = m.store.Record(meta)
 
 	m.mu.Unlock()
-	return s, nil
+	return s, true, nil
+}
+
+// Status returns the alive sessions among ids (order preserved,
+// missing/exited ones skipped). It powers the client manifest
+// polling: POST /api/sessions/status.
+func (m *Manager) Status(ids []string) []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := make([]*Session, 0, len(ids))
+	for _, id := range ids {
+		if s, ok := m.sessions[id]; ok && s.State() != StateDestroyed && !s.Exited() {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions
 }
 
 // Get returns the session with the given id.

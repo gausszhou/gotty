@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -130,8 +131,19 @@ func (s *stubTerminal) writtenString() string {
 func stubFactory() (TerminalFactory, *stubTerminal) {
 	stub := newStubTerminal("mock")
 	return func(command string, args []string, opts ...terminal.Option) (Terminal, error) {
+		// 记录真实入参,供命令/参数断言使用
+		stub.command = command
+		stub.args = args
 		return stub, nil
 	}, stub
+}
+
+// perCallFactory creates a fresh stub per factory call, so each session
+// owns an independent terminal (unlike the shared stubFactory singleton).
+func perCallFactory() TerminalFactory {
+	return func(command string, args []string, opts ...terminal.Option) (Terminal, error) {
+		return newStubTerminal(command), nil
+	}
 }
 
 func TestManagerLifecycle(t *testing.T) {
@@ -590,5 +602,132 @@ func TestManagerHistorySurvivesRestart(t *testing.T) {
 	history := m2.History()
 	if len(history) != 1 || history[0].ID != s.ID() || history[0].Args[0] != "-x" {
 		t.Fatalf("history lost after restart: %+v", history)
+	}
+}
+
+func TestCreateWithIDIdempotent(t *testing.T) {
+	factory, _ := stubFactory()
+	m := NewManager(WithTerminalFactory(factory))
+
+	const id = "aaaaaaaaaaaaaaaa"
+	s1, created, err := m.CreateWithID(id, "mock", nil)
+	if err != nil || !created {
+		t.Fatalf("expected fresh create, got created=%v err=%v", created, err)
+	}
+	s2, created, err := m.CreateWithID(id, "mock", nil)
+	if err != nil || created {
+		t.Fatalf("expected idempotent hit, got created=%v err=%v", created, err)
+	}
+	if s1 != s2 {
+		t.Fatal("idempotent create must return the same session")
+	}
+	// 幂等命中不占 max-session 名额
+	if m.Count() != 1 {
+		t.Fatalf("expected 1 session, got %d", m.Count())
+	}
+}
+
+func TestCreateWithIDResurrectsRecordedSession(t *testing.T) {
+	factory, _ := stubFactory()
+	store := NewMemoryStore()
+	m := NewManager(WithTerminalFactory(factory), WithStore(store))
+
+	const id = "bbbbbbbbbbbbbbbb"
+	s1, _, err := m.CreateWithID(id, "mock", []string{"-x"})
+	if err != nil {
+		t.Fatalf("failed to create: %s", err)
+	}
+	if err := m.Destroy(s1.ID()); err != nil {
+		t.Fatalf("failed to destroy: %s", err)
+	}
+
+	// 复活:即使请求带了不同命令,也用记录中的命令重建
+	s2, created, err := m.CreateWithID(id, "totally-different", nil)
+	if err != nil {
+		t.Fatalf("failed to resurrect: %s", err)
+	}
+	if !created {
+		t.Fatal("expected a new session from resurrection")
+	}
+	if s2.ID() != id {
+		t.Fatalf("resurrected id mismatch: %s", s2.ID())
+	}
+	if s2.Command() != "mock" || len(s2.Args()) != 1 || s2.Args()[0] != "-x" {
+		t.Fatalf("resurrected session must use recorded command, got %s %v", s2.Command(), s2.Args())
+	}
+	meta, ok := store.Get(id)
+	if !ok {
+		t.Fatal("record must exist after resurrection")
+	}
+	if meta.RunCount != 1 {
+		t.Fatalf("expected run_count=1 after resurrect, got %d", meta.RunCount)
+	}
+}
+
+func TestManagerStatus(t *testing.T) {
+	var lastStub *stubTerminal
+	factory := func(command string, args []string, opts ...terminal.Option) (Terminal, error) {
+		lastStub = newStubTerminal(command)
+		return lastStub, nil
+	}
+	m := NewManager(WithTerminalFactory(factory))
+
+	s1, _ := m.Create("mock", nil)
+	s2, _ := m.Create("mock", nil)
+
+	got := m.Status([]string{s1.ID(), s2.ID(), "nonexistent"})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 alive, got %d", len(got))
+	}
+	if got[0] != s1 || got[1] != s2 {
+		t.Fatal("status must preserve the requested order")
+	}
+
+	// destroyed 不算存活
+	if err := m.Destroy(s1.ID()); err != nil {
+		t.Fatalf("failed to destroy: %s", err)
+	}
+	got = m.Status([]string{s1.ID(), s2.ID()})
+	if len(got) != 1 || got[0] != s2 {
+		t.Fatalf("destroyed session must not be reported alive: %+v", got)
+	}
+
+	// exited 不算存活(清扫窗口期)
+	lastStub.Close()
+	got = m.Status([]string{s2.ID()})
+	if len(got) != 0 {
+		t.Fatalf("exited session must not be reported alive: %+v", got)
+	}
+}
+
+// TestFileStoreMigratesLegacyArray: 旧格式(数组)在加载时被迁移为 map 并原子重写。
+func TestFileStoreMigratesLegacyArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	legacy := `{"sessions": [
+		{"id":"a1","command":"bash","state":"idle","created_at":111},
+		{"id":"a2","command":"top","args":["-d","2"],"state":"running","created_at":222}
+	]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("failed to write legacy file: %s", err)
+	}
+
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("failed to load legacy file: %s", err)
+	}
+	if len(store.All()) != 2 {
+		t.Fatalf("expected 2 records after migration, got %d", len(store.All()))
+	}
+
+	// 文件已被重写为 map 格式,再次加载不再走迁移
+	reloaded, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("failed to reload migrated file: %s", err)
+	}
+	if len(reloaded.All()) != 2 {
+		t.Fatalf("expected 2 records after reload, got %d", len(reloaded.All()))
+	}
+	if meta, ok := reloaded.Get("a1"); !ok || meta.Command != "bash" {
+		t.Fatalf("migrated record a1 mismatch: %+v", meta)
 	}
 }
