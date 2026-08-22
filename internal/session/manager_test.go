@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"testing"
@@ -22,6 +23,18 @@ type splitConn struct {
 
 func (c *splitConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
 func (c *splitConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+
+// Close 实现 io.Closer:关闭两端 pipe,令阻塞中的 Read 返回错误,
+// 供抢占测试(Session.Attach 踢除旧客户端)使用。
+func (c *splitConn) Close() error {
+	if r, ok := c.reader.(io.Closer); ok {
+		r.Close()
+	}
+	if w, ok := c.writer.(io.Closer); ok {
+		w.Close()
+	}
+	return nil
+}
 
 // discardRW swallows reads and writes; used when a side is irrelevant.
 type discardRW struct{}
@@ -337,14 +350,39 @@ func TestAttachProtocol(t *testing.T) {
 		return len(stub.resizes) == 1 && stub.resizes[0] == [2]int{120, 40}
 	})
 
-	// 6. second attach while running -> busy
-	if err := sess.Attach(context.Background(), discardRW{}, opts); !errors.Is(err, ErrSessionBusy) {
-		t.Fatalf("expected ErrSessionBusy, got: %v", err)
+	// 6. 同 id 的新 attach 抢占当前客户端
+	inReader3, inWriter3 := io.Pipe()
+	outReader3, outWriter3 := io.Pipe()
+	conn3 := &splitConn{reader: inReader3, writer: outWriter3}
+	preemptDone := make(chan error, 1)
+	go func() {
+		preemptDone <- sess.Attach(context.Background(), conn3, opts)
+	}()
+
+	// 旧客户端被踢出,返回 ErrSessionPreempted
+	if err := <-attachDone; !errors.Is(err, ErrSessionPreempted) {
+		t.Fatalf("expected ErrSessionPreempted, got: %v", err)
+	}
+	// 会话仍被新客户端附着(Running)
+	if sess.State() != StateRunning {
+		t.Fatalf("unexpected state after preempt: %s", sess.State())
+	}
+	// 新客户端收到 init 帧 + 重放的历史输出
+	if frame := readFrame(t, outReader3); frame[0] != terminal.SetWindowTitle {
+		t.Fatalf("unexpected frame after preempt: `%c`", frame[0])
+	}
+	if frame := readFrame(t, outReader3); frame[0] != terminal.SetReconnect {
+		t.Fatalf("unexpected second frame after preempt: `%c`", frame[0])
+	}
+	if frame := readFrame(t, outReader3); frame[0] != terminal.Output {
+		t.Fatalf("expected replayed Output after preempt, got type `%c`", frame[0])
+	} else if string(frame[1:]) != "hello" {
+		t.Fatalf("unexpected replayed output after preempt: %q", frame[1:])
 	}
 
-	// 7. client disconnects -> attach returns, state back to idle
-	inWriter.Close()
-	if err := <-attachDone; !errors.Is(err, ErrClientClosed) {
+	// 7. 新客户端断开 -> attach 返回,状态回 idle
+	inWriter3.Close()
+	if err := <-preemptDone; !errors.Is(err, ErrClientClosed) {
 		t.Fatalf("expected ErrClientClosed, got: %v", err)
 	}
 	if sess.State() != StateIdle {
@@ -356,7 +394,7 @@ func TestAttachProtocol(t *testing.T) {
 	outReader2, outWriter2 := io.Pipe()
 	conn2 := &splitConn{reader: inReader2, writer: outWriter2}
 	go func() {
-		attachDone <- sess.Attach(context.Background(), conn2, opts)
+		preemptDone <- sess.Attach(context.Background(), conn2, opts)
 	}()
 	if frame := readFrame(t, outReader2); frame[0] != terminal.SetWindowTitle {
 		t.Fatalf("unexpected reattach frame type `%c`", frame[0])
@@ -364,8 +402,15 @@ func TestAttachProtocol(t *testing.T) {
 	if frame := readFrame(t, outReader2); frame[0] != terminal.SetReconnect {
 		t.Fatalf("unexpected reattach second frame type `%c`", frame[0])
 	}
+	// 9. the buffered output from earlier ("hello" written during the first
+	// attach) is replayed so the reattached client sees it immediately.
+	if frame := readFrame(t, outReader2); frame[0] != terminal.Output {
+		t.Fatalf("expected replayed Output frame, got type `%c`", frame[0])
+	} else if string(frame[1:]) != "hello" {
+		t.Fatalf("unexpected replayed output: %q", frame[1:])
+	}
 	inWriter2.Close()
-	<-attachDone
+	<-preemptDone
 }
 
 func TestAttachPermitWriteDisabled(t *testing.T) {
@@ -463,5 +508,87 @@ func TestDestroyWhileAttached(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("attach did not return after destroy")
+	}
+}
+
+func TestFileStoreRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("failed to create store: %s", err)
+	}
+	if len(store.All()) != 0 {
+		t.Fatal("new store must be empty")
+	}
+
+	_ = store.Record(Metadata{ID: "a1", Command: "bash", State: "idle", CreatedAt: 111})
+	_ = store.Record(Metadata{ID: "a2", Command: "top", Args: []string{"-d", "2"}, State: "running", CreatedAt: 222})
+
+	// 模拟重启:重新加载同一文件
+	reloaded, err := NewFileStore(path)
+	if err != nil {
+		t.Fatalf("failed to reload store: %s", err)
+	}
+	all := reloaded.All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 records after reload, got %d", len(all))
+	}
+
+	byID := map[string]Metadata{}
+	for _, m := range all {
+		byID[m.ID] = m
+	}
+	if byID["a1"].Command != "bash" || byID["a1"].State != "idle" {
+		t.Fatalf("unexpected a1 record: %+v", byID["a1"])
+	}
+	if byID["a2"].Args[0] != "-d" || byID["a2"].State != "running" {
+		t.Fatalf("unexpected a2 record: %+v", byID["a2"])
+	}
+
+	// Forget 后重载为空
+	if err := reloaded.Forget("a1"); err != nil {
+		t.Fatalf("failed to forget: %s", err)
+	}
+	reloaded2, _ := NewFileStore(path)
+	if len(reloaded2.All()) != 1 {
+		t.Fatal("expected 1 record after forget")
+	}
+}
+
+func TestManagerKeepsHistoryAfterDestroy(t *testing.T) {
+	factory, _ := stubFactory()
+	m := NewManager(WithTerminalFactory(factory))
+	s1, _ := m.Create("mock", nil)
+	_, _ = m.Create("mock", nil)
+
+	if err := m.Destroy(s1.ID()); err != nil {
+		t.Fatalf("failed to destroy: %s", err)
+	}
+
+	history := m.History()
+	if len(history) != 1 || history[0].ID != s1.ID() {
+		t.Fatalf("unexpected history: %+v", history)
+	}
+	if m.Count() != 1 {
+		t.Fatalf("s2 should still be alive, count=%d", m.Count())
+	}
+}
+
+func TestManagerHistorySurvivesRestart(t *testing.T) {
+	factory, _ := stubFactory()
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	store, _ := NewFileStore(path)
+
+	m1 := NewManager(WithTerminalFactory(factory), WithStore(store))
+	s, _ := m1.Create("mock", []string{"-x"})
+	_ = m1.Destroy(s.ID())
+
+	// 重启:同一 store 文件,新的 manager
+	store2, _ := NewFileStore(path)
+	m2 := NewManager(WithTerminalFactory(factory), WithStore(store2))
+	history := m2.History()
+	if len(history) != 1 || history[0].ID != s.ID() || history[0].Args[0] != "-x" {
+		t.Fatalf("history lost after restart: %+v", history)
 	}
 }

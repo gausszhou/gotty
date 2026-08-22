@@ -134,7 +134,7 @@ func (m *Manager) Create(command string, args []string, termOpts ...terminal.Opt
 		ID:        s.ID(),
 		Command:   command,
 		Args:      args,
-		State:     s.State(),
+		State:     s.State().String(),
 		CreatedAt: s.CreatedAt().Unix(),
 	})
 
@@ -174,6 +174,7 @@ func (m *Manager) Count() int {
 }
 
 // Destroy stops the process of the session and removes it from the registry.
+// The session record stays in the store as history.
 func (m *Manager) Destroy(id string) error {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
@@ -189,9 +190,47 @@ func (m *Manager) Destroy(id string) error {
 
 	m.mu.Lock()
 	delete(m.sessions, id)
-	_ = m.store.Forget(id)
 	m.mu.Unlock()
 	return nil
+}
+
+// History returns all recorded sessions (alive ones excluded),
+// i.e. the durable session history across restarts.
+func (m *Manager) History() []Metadata {
+	alive := make(map[string]struct{}, len(m.sessions))
+	m.mu.Lock()
+	for id := range m.sessions {
+		alive[id] = struct{}{}
+	}
+	m.mu.Unlock()
+
+	history := make([]Metadata, 0)
+	for _, meta := range m.store.All() {
+		if _, ok := alive[meta.ID]; !ok {
+			history = append(history, meta)
+		}
+	}
+	return history
+}
+
+// UpdateTitle renames a session (alive or historical) in the store.
+func (m *Manager) UpdateTitle(id, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 活会话同步显示名
+	if s, ok := m.sessions[id]; ok {
+		s.SetTitle(title)
+	}
+
+	for _, meta := range m.store.All() {
+		if meta.ID != id {
+			continue
+		}
+		meta.Title = title
+		return m.store.Record(meta)
+	}
+	return ErrNotFound
 }
 
 // Start runs the maintenance loop (expiry sweep) until ctx is canceled.
@@ -212,6 +251,7 @@ func (m *Manager) Start(ctx context.Context) {
 
 // DestroyExpired removes exited and destroyed sessions, and destroys
 // sessions that stayed unattached beyond the idle timeout.
+// Session records stay in the store as history.
 func (m *Manager) DestroyExpired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -220,13 +260,11 @@ func (m *Manager) DestroyExpired() {
 		switch {
 		case s.State() == StateDestroyed, s.Exited():
 			delete(m.sessions, id)
-			_ = m.store.Forget(id)
 
 		case m.idleTimeout > 0 && s.State() == StateIdle &&
 			time.Since(s.LastTouched()) >= m.idleTimeout:
 			s.Destroy()
 			delete(m.sessions, id)
-			_ = m.store.Forget(id)
 		}
 	}
 }

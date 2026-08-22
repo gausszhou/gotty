@@ -79,6 +79,32 @@ func (server *Server) handleListSessions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: descriptions})
 }
 
+// handleListHistory implements GET /api/sessions/history
+// (persisted session history across restarts).
+func (server *Server) handleListHistory(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"sessions": server.manager.History(),
+	})
+}
+
+// handleUpdateTitle implements PUT /api/sessions/{id}/title
+// (persisted on the server; works for alive and historical sessions).
+func (server *Server) handleUpdateTitle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := server.manager.UpdateTitle(r.PathValue("id"), req.Title); err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"title": req.Title})
+}
+
 // handleGetSession implements GET /api/sessions/{id}.
 func (server *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	sess, err := server.manager.Get(r.PathValue("id"))

@@ -49,20 +49,11 @@ func newTestServer(t *testing.T, modify func(*Options)) (*httptest.Server, *sess
 
 func createSession(t *testing.T, ts *httptest.Server, body string) map[string]interface{} {
 	t.Helper()
-	return createSessionAs(t, ts, body, "")
-}
-
-func createSessionAs(t *testing.T, ts *httptest.Server, body, credential string) map[string]interface{} {
-	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("failed to build request: %s", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if credential != "" {
-		user, pass, _ := strings.Cut(credential, ":")
-		req.SetBasicAuth(user, pass)
-	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -211,7 +202,7 @@ func TestRESTCreateWithoutCommand(t *testing.T) {
 func TestSiteEndpoints(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 
-	for _, path := range []string{"/", "/auth_token.js", "/config.js", "/favicon.png"} {
+	for _, path := range []string{"/", "/main.js", "/favicon.png"} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatalf("failed to GET %s: %s", path, err)
@@ -219,6 +210,21 @@ func TestSiteEndpoints(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("unexpected status for %s: %d", path, resp.StatusCode)
+		}
+	}
+
+	// 已被替代/移除的旧端点不再提供(token 相关与旧静态路径)
+	for _, path := range []string{
+		"/auth_token.js", "/config.js", "/api/config",
+		"/gotty-bundle.js", "/js/gotty-bundle.js", "/css/index.css",
+	} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("failed to GET %s: %s", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("legacy endpoint %s must be gone, got %d", path, resp.StatusCode)
 		}
 	}
 }
@@ -237,17 +243,6 @@ func dialWS(t *testing.T, ts *httptest.Server, id string) *websocket.Conn {
 		t.Fatalf("failed to dial websocket: %s", err)
 	}
 	return conn
-}
-
-func sendInit(t *testing.T, conn *websocket.Conn, token string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	init, _ := json.Marshal(InitMessage{Arguments: "", AuthToken: token})
-	if err := conn.Write(ctx, websocket.MessageBinary, init); err != nil {
-		t.Fatalf("failed to send init message: %s", err)
-	}
 }
 
 // readFrame reads the next binary message with a deadline.
@@ -278,7 +273,6 @@ func TestWSAttachE2E(t *testing.T) {
 	// 1. attach, receive the window title frame
 	conn := dialWS(t, ts, id)
 	defer conn.CloseNow()
-	sendInit(t, conn, "")
 
 	frame := readWSFrame(t, conn)
 	if frame[0] != terminal.SetWindowTitle {
@@ -325,7 +319,6 @@ func TestWSAttachE2E(t *testing.T) {
 	// 4. reconnect: the same session is still alive
 	conn2 := dialWS(t, ts, id)
 	defer conn2.CloseNow()
-	sendInit(t, conn2, "")
 
 	frame = readWSFrame(t, conn2)
 	if frame[0] != terminal.SetWindowTitle {
@@ -352,60 +345,37 @@ func TestWSAttachE2E(t *testing.T) {
 	}
 }
 
-func TestWSAttachRequiresAuthToken(t *testing.T) {
-	ts, _ := newTestServer(t, func(o *Options) {
-		o.Credential = "user:pass"
-	})
-	created := createSessionAs(t, ts, `{"command":"cat"}`, "user:pass")
-	id := created["id"].(string)
-
-	// wrong token -> rejected
-	conn := dialWS(t, ts, id)
-	defer conn.CloseNow()
-	sendInit(t, conn, "wrong-token")
-
-	_, _, err := conn.Reader(context.Background())
-	if err == nil {
-		t.Fatal("expected reader error after rejected auth")
-	}
-
-	// correct token -> accepted
-	conn2 := dialWS(t, ts, id)
-	defer conn2.CloseNow()
-	sendInit(t, conn2, "user:pass")
-	if frame := readWSFrame(t, conn2); frame[0] != terminal.SetWindowTitle {
-		t.Fatalf("unexpected first frame type `%c`", frame[0])
-	} else {
-		t.Logf("title frame: %q", frame[1:])
-	}
-}
-
-func TestWSBusySession(t *testing.T) {
+func TestWSPreemptsSession(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 	created := createSession(t, ts, `{"command":"cat"}`)
 	id := created["id"].(string)
 
 	conn := dialWS(t, ts, id)
 	defer conn.CloseNow()
-	sendInit(t, conn, "")
 	if frame := readWSFrame(t, conn); frame[0] != terminal.SetWindowTitle {
 		t.Fatalf("unexpected first frame type `%c`", frame[0])
 	}
 
-	// a second attach must be rejected while the first is attached
+	// a second attach to the same session preempts the first one
 	conn2 := dialWS(t, ts, id)
 	defer conn2.CloseNow()
-	sendInit(t, conn2, "")
 
+	// the old client is closed with TryAgainLater ("session preempted")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _, err := conn2.Reader(ctx)
-	if err == nil {
-		t.Fatal("expected error for busy session")
+	if _, _, err := conn.Reader(ctx); err == nil {
+		t.Fatal("expected the preempted client to be closed")
+	} else {
+		var closeErr websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusTryAgainLater {
+			t.Fatalf("unexpected close error: %v", err)
+		}
 	}
-	var closeErr websocket.CloseError
-	if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusTryAgainLater {
-		t.Fatalf("unexpected close error: %v", err)
+
+	// the new client owns the session: it receives the init frames
+	// (title + replay of anything printed so far)
+	if frame := readWSFrame(t, conn2); frame[0] != terminal.SetWindowTitle {
+		t.Fatalf("unexpected preempting frame type `%c`", frame[0])
 	}
 }
 
@@ -414,7 +384,6 @@ func TestWSMissingSession(t *testing.T) {
 
 	conn := dialWS(t, ts, "no-such-session")
 	defer conn.CloseNow()
-	sendInit(t, conn, "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

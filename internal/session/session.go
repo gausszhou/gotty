@@ -40,9 +40,9 @@ func (s State) String() string {
 
 // Errors returned by session operations.
 var (
-	// ErrSessionBusy is returned when a second client tries to attach to
-	// a session that already has a client.
-	ErrSessionBusy = errors.New("session is already attached")
+	// ErrSessionPreempted is returned by an attach that was taken over
+	// by a newer attach to the same session (same session id).
+	ErrSessionPreempted = errors.New("session preempted by another client")
 	// ErrSessionDestroyed is returned when operating on a destroyed session.
 	ErrSessionDestroyed = errors.New("session is destroyed")
 	// ErrClientClosed indicates the client connection was closed.
@@ -81,28 +81,64 @@ type Terminal interface {
 	WindowTitleVariables() map[string]interface{}
 }
 
+// outputRingCapacity bounds the per-session replay buffer kept for
+// reconnecting clients.
+const outputRingCapacity = 128 * 1024
+
 // Session is one terminal process with its lifecycle state.
 // A Session is safe for concurrent use.
 type Session struct {
 	id        string
 	term      Terminal
 	createdAt time.Time
+	title     string // 显示名(重命名;同时持久化在 Store)
 
 	mu          sync.Mutex
 	state       State
 	conn        io.ReadWriter
 	lastTouched time.Time // last attach or detach; idle-timeout reference
+	// attachEpoch 是所有权令牌:每次 Attach 递增;被抢占的旧 attach
+	// 只有在自己的 epoch 仍是当前值时才能把状态退回 Idle。
+	attachEpoch uint64
+
+	// outMu makes ring writes (outputPump), the attach-time replay
+	// snapshot and the replay boundary atomic relative to each other.
+	outMu sync.Mutex
+	// total counts the bytes ever appended to out (monotonic).
+	total int64
+	// replaySeq is the value of total captured when the current attach
+	// took its replay snapshot. The pump delivers a chunk live only when
+	// its start sequence is >= replaySeq (i.e. the chunk is not part of
+	// the replay that was just sent to this client).
+	replaySeq int64
+
+	// out keeps the most recent terminal output so that a later attach
+	// can replay it (the client screen would otherwise stay blank until
+	// the process produces new output).
+	out *ring
+
+	// termExited is closed by outputPump once reading the PTY fails,
+	// i.e. the terminal process has gone away.
+	termExited chan struct{}
 }
 
 // New creates a Session wrapping an already-started terminal.
 func New(id string, term Terminal) *Session {
-	return &Session{
+	s := &Session{
 		id:          id,
 		term:        term,
 		createdAt:   time.Now(),
 		state:       StateIdle,
 		lastTouched: time.Now(),
+		out:         newRing(outputRingCapacity),
+		termExited:  make(chan struct{}),
 	}
+	// A single persistent reader owns the PTY for the whole session
+	// lifetime. If the pump lived inside Attach, a detached client would
+	// leave a goroutine stuck in PTY read that steals the output of the
+	// next attach.
+	go s.outputPump()
+	return s
 }
 
 // ID returns the session id.
@@ -110,6 +146,12 @@ func (s *Session) ID() string { return s.id }
 
 // CreatedAt returns the creation time.
 func (s *Session) CreatedAt() time.Time { return s.createdAt }
+
+// Title returns the display name (empty = automatic numbering).
+func (s *Session) Title() string { return s.title }
+
+// SetTitle updates the display name.
+func (s *Session) SetTitle(title string) { s.title = title }
 
 // Command returns the command running in the session.
 func (s *Session) Command() string { return s.term.Command() }
@@ -152,6 +194,7 @@ func (s *Session) StateDescription() StateDescription {
 		Args:      s.Args(),
 		PID:       s.PID(),
 		Exited:    s.Exited(),
+		Title:     s.title,
 		CreatedAt: s.createdAt.Format(time.RFC3339),
 	}
 }
@@ -164,6 +207,7 @@ type StateDescription struct {
 	Args      []string `json:"args"`
 	PID       int      `json:"pid"`
 	Exited    bool     `json:"exited"`
+	Title     string   `json:"title,omitempty"` // 显示名(空 = 自动编号)
 	CreatedAt string   `json:"created_at"`
 }
 
@@ -171,34 +215,53 @@ type StateDescription struct {
 // blocks until the client disconnects, the context is canceled, or the
 // terminal process exits.
 //
-// While attached, the session is in StateRunning; afterwards it returns
-// to StateIdle and the PTY keeps running (client disconnect only detaches).
+// Attach implements preemption: at most one client is attached per
+// session, and a new attach (same session id — e.g. a page refresh)
+// immediately takes over by closing the previous client connection.
+// The preempted attach returns ErrSessionPreempted and does not touch
+// the session state.
 func (s *Session) Attach(ctx context.Context, conn io.ReadWriter, opts AttachOptions) error {
 	s.mu.Lock()
-	switch s.state {
-	case StateDestroyed:
+	if s.state == StateDestroyed {
 		s.mu.Unlock()
 		return ErrSessionDestroyed
-	case StateRunning:
-		s.mu.Unlock()
-		return ErrSessionBusy
 	}
-	s.state = StateRunning
+	// 抢占:接管现有附着者
+	old := s.conn
+	s.attachEpoch++
+	myEpoch := s.attachEpoch
 	s.conn = conn
+	s.state = StateRunning
 	s.lastTouched = time.Now()
 	s.mu.Unlock()
 
-	defer func() {
-		s.mu.Lock()
-		if s.state == StateRunning {
-			s.state = StateIdle
+	if old != nil {
+		if closer, ok := old.(io.Closer); ok {
+			// 在锁外关闭旧连接,避免阻塞状态机
+			closer.Close()
 		}
-		s.conn = nil
-		s.lastTouched = time.Now()
-		s.mu.Unlock()
-	}()
+	}
 
-	return s.bridge(ctx, conn, opts)
+	err := s.bridge(ctx, conn, opts)
+
+	s.mu.Lock()
+	switch {
+	case s.state == StateDestroyed:
+		// 会话已销毁:状态已定,不回收
+	case s.attachEpoch == myEpoch:
+		// 仍持有所有权:正常脱离
+		s.state = StateIdle
+		if s.conn == conn {
+			s.conn = nil
+		}
+	default:
+		// 已被更新的 attach 接管,不动状态
+		err = ErrSessionPreempted
+	}
+	s.lastTouched = time.Now()
+	s.mu.Unlock()
+
+	return err
 }
 
 // Detach force-closes the current client connection, if any.
@@ -215,6 +278,8 @@ func (s *Session) Detach() {
 
 // Destroy tears the session down: it closes the client connection when
 // attached and kills the terminal process, then marks the session destroyed.
+// attachEpoch is bumped so a still-running attach loses ownership and
+// cannot flip the state back to Idle afterwards.
 func (s *Session) Destroy() error {
 	s.mu.Lock()
 	if s.state == StateDestroyed {
@@ -222,6 +287,7 @@ func (s *Session) Destroy() error {
 		return nil
 	}
 	s.state = StateDestroyed
+	s.attachEpoch++
 	conn := s.conn
 	s.conn = nil
 	s.mu.Unlock()
@@ -242,27 +308,39 @@ func (s *Session) LastTouched() time.Time {
 
 // bridge pumps bytes in both directions.
 func (s *Session) bridge(ctx context.Context, conn io.ReadWriter, opts AttachOptions) error {
+	// Take the replay snapshot and raise the delivery boundary BEFORE
+	// anything live can reach this client. outMu makes the snapshot,
+	// the boundary and the pump's ring writes atomic relative to each
+	// other: bytes recorded before the snapshot are replayed here and
+	// skipped by the pump; bytes recorded after are delivered by the
+	// pump. Either way nothing is duplicated or lost.
+	s.outMu.Lock()
+	s.replaySeq = s.total
+	snapshot := s.out.Bytes()
+	s.outMu.Unlock()
+
 	if err := s.sendInitializeMessage(conn, opts); err != nil {
+		return err
+	}
+	if err := s.replayOutput(conn, snapshot); err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errs := make(chan error, 2)
-	go func() {
-		errs <- s.slaveToMaster(ctx, conn)
-	}()
+	errs := make(chan error, 1)
 	go func() {
 		errs <- s.masterToSlave(ctx, conn, opts)
 	}()
 
 	select {
 	case err := <-errs:
-		cancel()
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.termExited:
+		return terminal.ErrTerminalClosed
 	}
 }
 
@@ -285,26 +363,70 @@ func (s *Session) sendInitializeMessage(conn io.ReadWriter, opts AttachOptions) 
 	return nil
 }
 
-// slaveToMaster relays terminal output to the client.
-func (s *Session) slaveToMaster(ctx context.Context, conn io.ReadWriter) error {
-	buffer := make([]byte, 32*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+// replayOutput sends a pre-captured snapshot of the session output
+// (from bridge) as output frames.
+func (s *Session) replayOutput(conn io.Writer, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	const chunk = 32 * 1024
+	for len(data) > 0 {
+		n := len(data)
+		if n > chunk {
+			n = chunk
+		}
+		if _, err := conn.Write(terminal.EncodeOutput(data[:n])); err != nil {
+			return err
 		}
 
+		data = data[n:]
+	}
+	return nil
+}
+
+// outputPump is the session's single PTY reader, started once at session
+// creation. It feeds the replay ring and delivers output to the currently
+// attached client (if any), so output is never lost or stolen between
+// attaches. It exits when the terminal closes.
+//
+// A chunk is delivered live only when its start sequence is at or beyond
+// the current attach's replay boundary; a chunk that fell into the
+// attach's replay snapshot is skipped (the client already got it).
+func (s *Session) outputPump() {
+	buffer := make([]byte, 32*1024)
+	for {
 		n, err := s.term.Read(buffer)
 		if err != nil {
-			return terminal.ErrTerminalClosed
+			select {
+			case <-s.termExited:
+			default:
+				close(s.termExited)
+			}
+			return
 		}
 		if n == 0 {
 			continue
 		}
 
-		if _, err := conn.Write(terminal.EncodeOutput(buffer[:n])); err != nil {
-			return ErrClientClosed
+		var deliverTo io.ReadWriter
+		s.outMu.Lock()
+		chunkStart := s.total
+		s.total += int64(n)
+		s.out.Write(buffer[:n])
+		if chunkStart >= s.replaySeq {
+			s.mu.Lock()
+			deliverTo = s.conn
+			s.mu.Unlock()
+		}
+		s.outMu.Unlock()
+
+		if deliverTo == nil {
+			continue
+		}
+		if _, err := deliverTo.Write(terminal.EncodeOutput(buffer[:n])); err != nil {
+			// Client is gone; the next attach replays from the ring.
+			continue
 		}
 	}
 }

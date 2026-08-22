@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"html/template"
 	"io/fs"
 	"log"
 	"net"
@@ -27,7 +26,6 @@ type Server struct {
 	manager *session.Manager
 	options *Options
 
-	indexTemplate *template.Template
 	titleTemplate *noesctmpl.Template
 
 	wsOriginMatcher *regexp.Regexp
@@ -36,16 +34,11 @@ type Server struct {
 	wsWG        sync.WaitGroup
 }
 
-// New creates a Server. It parses the embedded index page and the
-// window title template; both are part of the configuration.
+// New creates a Server. It validates the embedded index page and parses
+// the window title template (sent to clients on attach).
 func New(manager *session.Manager, options *Options) (*Server, error) {
-	indexData, err := fs.ReadFile(staticFiles, "static/index.html")
-	if err != nil {
-		return nil, fmt.Errorf("index template not found in embedded static files: %w", err)
-	}
-	indexTemplate, err := template.New("index").Parse(string(indexData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse index template: %w", err)
+	if _, err := fs.ReadFile(staticFiles, "static/index.html"); err != nil {
+		return nil, fmt.Errorf("index page not found in embedded static files: %w", err)
 	}
 
 	titleTemplate, err := noesctmpl.New("title").Parse(options.TitleFormat)
@@ -65,7 +58,6 @@ func New(manager *session.Manager, options *Options) (*Server, error) {
 	return &Server{
 		manager:         manager,
 		options:         options,
-		indexTemplate:   indexTemplate,
 		titleTemplate:   titleTemplate,
 		wsOriginMatcher: originMatcher,
 	}, nil
@@ -161,17 +153,16 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 
 // setupHandlers wires the route table:
 //
-//	GET  /                    terminal page (index template)
-//	GET  /js/*,/css/*,favicon static assets
-//	GET  /auth_token.js       auth token for the page
-//	GET  /config.js           client config for the page
+//	GET  /                    terminal page (vite build 产物)
+//	GET  /main.js             前端 bundle
+//	GET  /favicon.png         favicon
 //	POST /api/sessions        create session
 //	GET  /api/sessions        list sessions
 //	GET  /api/sessions/{id}   session detail
 //	DELETE /api/sessions/{id} destroy session
 //	POST /api/sessions/{id}/resize
 //	POST /api/sessions/{id}/signal
-//	GET  /ws                  attach to ?session_id=xxx (WebSocket)
+//	GET  /ws                  WebSocket(多会话复用,协议见 docs/ws-multiplex.md)
 func (server *Server) setupHandlers() http.Handler {
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -184,24 +175,19 @@ func (server *Server) setupHandlers() http.Handler {
 	// REST API — session management
 	apiMux.HandleFunc("POST /api/sessions", server.handleCreateSession)
 	apiMux.HandleFunc("GET /api/sessions", server.handleListSessions)
+	apiMux.HandleFunc("GET /api/sessions/history", server.handleListHistory)
 	apiMux.HandleFunc("GET /api/sessions/{id}", server.handleGetSession)
+	apiMux.HandleFunc("PUT /api/sessions/{id}/title", server.handleUpdateTitle)
 	apiMux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/resize", server.handleResizeSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/signal", server.handleSignalSession)
 
-	// Site
-	apiMux.HandleFunc("GET /", server.handleIndex)
-	apiMux.Handle("GET /js/", http.StripPrefix("/", staticFileHandler))
-	apiMux.Handle("GET /css/", http.StripPrefix("/", staticFileHandler))
+	// Site — vite build 产物(仅根路径;未知路径 404)
+	apiMux.HandleFunc("GET /{$}", server.handleIndex)
+	apiMux.Handle("GET /main.js", http.StripPrefix("/", staticFileHandler))
 	apiMux.Handle("GET /favicon.png", http.StripPrefix("/", staticFileHandler))
-	apiMux.HandleFunc("GET /auth_token.js", server.handleAuthToken)
-	apiMux.HandleFunc("GET /config.js", server.handleConfig)
 
 	var siteHandler http.Handler = apiMux
-	if server.options.Credential != "" {
-		log.Printf("Using Basic Authentication")
-		siteHandler = server.wrapBasicAuth(siteHandler, server.options.Credential)
-	}
 	siteHandler = gziphandler.GzipHandler(server.wrapHeaders(siteHandler))
 	siteHandler = server.wrapLogger(siteHandler)
 
@@ -212,33 +198,14 @@ func (server *Server) setupHandlers() http.Handler {
 	return mux
 }
 
-// handleIndex renders the terminal page with the window title.
+// handleIndex serves the terminal page (vite build 产物,直接透传)。
 func (server *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	titleVars := server.titleVariables(
-		[]string{"server", "master"},
-		map[string]map[string]interface{}{
-			"server": server.options.TitleVariables,
-			"master": {
-				"remote_addr": r.RemoteAddr,
-			},
-		},
-	)
-
-	titleBuf := new(bytes.Buffer)
-	if err := server.titleTemplate.Execute(titleBuf, titleVars); err != nil {
+	content, err := fs.ReadFile(staticFiles, "static/index.html")
+	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-
-	indexBuf := new(bytes.Buffer)
-	if err := server.indexTemplate.Execute(indexBuf, map[string]interface{}{
-		"title": titleBuf.String(),
-	}); err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(indexBuf.Bytes())
+	w.Write(content)
 }
 
 // attachWindowTitle renders the window title for an attached session.
@@ -265,16 +232,6 @@ func (server *Server) attachWindowTitle(sess *session.Session, remoteAddr string
 		return nil
 	}
 	return titleBuf.Bytes()
-}
-
-func (server *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript")
-	w.Write([]byte("var gotty_auth_token = '" + server.options.Credential + "';"))
-}
-
-func (server *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript")
-	w.Write([]byte("var gotty_term = '" + server.options.Term + "';"))
 }
 
 // titleVariables merges maps in a specified order.

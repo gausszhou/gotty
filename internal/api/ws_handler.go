@@ -8,20 +8,12 @@ import (
 	"net/http"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/gausszhou/gotty/internal/session"
 	"github.com/gausszhou/gotty/internal/terminal"
 )
-
-// InitMessage is the first JSON frame the client sends after the
-// WebSocket connection is established (subprotocol "webtty").
-type InitMessage struct {
-	Arguments string `json:"Arguments,omitempty"`
-	AuthToken string `json:"AuthToken,omitempty"`
-}
 
 // signalByName maps a signal name to syscall.Signal.
 func signalByName(name string) (syscall.Signal, bool) {
@@ -37,6 +29,7 @@ func signalByName(name string) (syscall.Signal, bool) {
 }
 
 // handleWS implements GET /ws?session_id=xxx — attach to an existing session.
+// (无认证:连接建立后直接附着;多路复用协议见 docs/ws-multiplex.md)
 func (server *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if server.wsOriginMatcher != nil && !server.wsOriginMatcher.MatchString(r.Header.Get("Origin")) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
@@ -60,33 +53,6 @@ func (server *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	log.Printf("New client connected: %s", r.RemoteAddr)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	// The first frame must be a binary init message carrying the auth token.
-	typ, reader, err := conn.Reader(ctx)
-	if err != nil {
-		log.Printf("Failed to read init message from %s: %s", r.RemoteAddr, err)
-		return
-	}
-	if typ != websocket.MessageBinary {
-		conn.Close(websocket.StatusPolicyViolation, "init message must be binary")
-		return
-	}
-	initData, err := io.ReadAll(reader)
-	if err != nil {
-		log.Printf("Failed to read init message from %s: %s", r.RemoteAddr, err)
-		return
-	}
-	var init InitMessage
-	if err := json.Unmarshal(initData, &init); err != nil {
-		conn.Close(websocket.StatusPolicyViolation, "invalid init message")
-		return
-	}
-	if server.options.Credential != "" && init.AuthToken != server.options.Credential {
-		conn.Close(websocket.StatusPolicyViolation, "authentication failed")
-		return
-	}
 
 	sess, err := server.manager.Get(r.URL.Query().Get("session_id"))
 	if err != nil {
@@ -113,9 +79,8 @@ func (server *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		closeReason = "finished"
 	case session.ErrClientClosed:
 		closeReason = "client"
-	case session.ErrSessionBusy:
-		conn.Close(websocket.StatusTryAgainLater, "session is already attached")
-		closeReason = "session busy"
+	case session.ErrSessionPreempted:
+		closeReason = "preempted"
 	case terminal.ErrTerminalClosed:
 		closeReason = "terminal"
 	default:
@@ -184,4 +149,10 @@ func (c *wsConn) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// Close 实现 io.Closer:被同 id 的新 attach 抢占时由 Session 调用,
+// 以 1013 关闭帧优雅告知旧客户端(浏览器据此显示"已被其他客户端接管")。
+func (c *wsConn) Close() error {
+	return c.conn.Close(websocket.StatusTryAgainLater, "session preempted by another client")
 }
