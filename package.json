@@ -1,0 +1,19 @@
+{
+    "name": "gotty",
+    "version": "2.0.0",
+    "private": true,
+    "description": "GoTTY - share your terminal as a web application",
+    "packageManager": "pnpm@9.15.9",
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "scripts": {
+        "dev:web": "pnpm --filter gotty-frontend dev",
+        "dev:docs": "pnpm --filter gotty-docs dev",
+        "build": "pnpm --filter gotty-frontend build && pnpm --filter gotty-docs build",
+        "build:web": "pnpm --filter gotty-frontend build",
+        "build:docs": "pnpm --filter gotty-docs build",
+        "preview:web": "pnpm --filter gotty-frontend preview",
+        "preview:docs": "pnpm --filter gotty-docs preview"
+    }
+}

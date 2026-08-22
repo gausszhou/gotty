@@ -1,0 +1,15 @@
+{
+    "name": "gotty-docs",
+    "version": "2.0.0",
+    "private": true,
+    "description": "GoTTY documentation site built with VitePress",
+    "type": "module",
+    "scripts": {
+        "dev": "vitepress dev",
+        "build": "vitepress build",
+        "preview": "vitepress preview"
+    },
+    "devDependencies": {
+        "vitepress": "^1.6.4"
+    }
+}
