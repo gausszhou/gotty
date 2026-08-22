@@ -54,6 +54,21 @@ page always opens with a usable terminal. An explicit command in
 `POST /api/sessions` always takes precedence (except for resurrected
 sessions, which use the recorded command).
 
+## Theme & Terminal Colors
+
+The dark/light theme chosen on the page is pushed into the terminal so that
+programs inside render for the actual background:
+
+- Every session's PTY is launched with `COLORTERM=truecolor` and
+  `COLORFGBG=<fg>;<bg>` (rxvt convention): `15;0` (white on black) for the
+  dark theme, `0;15` (black on white) for the light theme. The theme of the
+  device creating the session is sent as `"theme": "dark"|"light"` in
+  `POST /api/sessions` and translated server-side; explicit `COLORTERM=` /
+  `COLORFGBG=` entries in the `env` config override the defaults.
+- Live color queries (`OSC 10/11 ; ?`) are answered by xterm.js with the
+  current theme colors, so programs that ask (vim/neovim's background
+  detection, tmux) adapt on their own — no extra configuration needed.
+
 ## Options
 
 ```
@@ -123,6 +138,79 @@ self-signed certificate:
 ```sh
 openssl req -x509 -nodes -days 9999 -newkey rsa:2048 -keyout ~/.gotty.key -out ~/.gotty.crt
 ```
+
+## Running in the Background (Daemon)
+
+GoTTY serves clients as long as its process is alive, so making it a
+long-running daemon is just a matter of keeping that process alive
+across terminal close, logout and crashes. A plain `&` in a terminal
+dies with the terminal (or at logout); use one of the following instead.
+
+### Quick start with `nohup`
+
+Start it detached from the terminal and let it log to GoTTY's own log
+file (`~/.gotty/logs/gotty.log` by default):
+
+```sh
+$ nohup ./build/gotty serve --log-file ~/.gotty/logs/gotty.log \
+    >/dev/null 2>&1 &
+$ disown                  # optional: drop it from the shell's job table
+```
+
+`nohup ... &` survives terminal close but is **not** restarted after a
+crash and does not start at boot. For that, use a process supervisor.
+
+### systemd (recommended)
+
+A systemd service restarts after crashes and can start automatically at
+boot. The example below installs a *user* service (per-login, no root
+needed). Put it in `~/.config/systemd/user/gotty.service`:
+
+```ini
+[Unit]
+Description=GoTTY terminal sharing server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/build/gotty serve
+WorkingDirectory=/path/to
+Restart=always
+RestartSec=3
+# GoTTY already logs to ~/.gotty/logs/gotty.log (see --log-file); keep
+# journal noise low by overriding it, e.g.:
+#   ExecStart=/path/to/build/gotty serve --log-file /var/log/gotty.log
+
+[Install]
+WantedBy=default.target
+```
+
+Install, start and make it survive logout and boot:
+
+```sh
+$ systemctl --user daemon-reload
+$ systemctl --user enable --now gotty.service   # start now + on login
+$ loginctl enable-linger $USER                  # keep running with no login
+```
+
+Useful commands:
+
+```sh
+$ systemctl --user status gotty.service         # status + recent log lines
+$ journalctl --user -u gotty.service -f         # follow the service log
+$ systemctl --user restart gotty.service        # restart after a rebuild
+$ systemctl --user stop gotty.service           # stop it
+```
+
+For a system-wide service (every user, started at boot by root), place
+the same unit in `/etc/systemd/system/gotty.service`, change
+`WantedBy=default.target` to `multi-user.target`, and manage it with
+`sudo systemctl enable --now gotty.service`.
+
+> Tip: when the service restarts, in-memory sessions are lost (session
+> state lives in the server process). The browser page automatically
+> creates new sessions, so this is transparent to end users.
 
 ## Sharing with Multiple Clients
 
