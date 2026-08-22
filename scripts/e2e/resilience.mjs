@@ -62,7 +62,7 @@ const aliveCount = `(async () => {
 
 // ── 1. 空态卡片:清单有 id 但服务端无存活 → 空态 → 点击创建 ──
 await evalJS(`localStorage.clear(); sessionStorage.clear(); true`)
-// 写入一个服务端不存在的伪条目,让 boot 落空(空清单会走自动创建,测不到空态)
+// 写入一个服务端不存在的伪条目,覆盖「清单有 id 但服务端无存活」分支(空清单本身也已停在空态)
 await evalJS(`localStorage.setItem('gotty.sessions', JSON.stringify([{id:'zz99999999999999',command:'/bin/bash',args:[],createdAt:Date.now(),lastSeen:Date.now()}])); true`)
 await hardReload()
 const card = await waitFor('empty card', `!!document.querySelector('.empty-card')`)

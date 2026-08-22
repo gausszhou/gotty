@@ -33,8 +33,10 @@ Usage: gotty serve [flags] [command [<arguments...>]]
 
 Run the server with your preferred command as its arguments
 (e.g. `gotty serve --port 8080 top`), then open `http://localhost:8080` in
-your browser: the page creates a session running the command and attaches
-to it.
+your browser: click **创建终端会话** (or the **＋** button in the tab bar) to
+create a session running the command and attach to it. Refreshing the page
+never creates a session on its own — it only reopens the most recently
+alive session, or shows the create card when there is none.
 
 Session ids are generated **by the client** (16 base36 chars). Each device
 keeps its own session list in `localStorage`; the server keeps records by

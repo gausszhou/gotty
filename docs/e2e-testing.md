@@ -61,7 +61,7 @@ const ws = new WebSocket(page.webSocketDebuggerUrl)
 
 | 脚本 | 场景 |
 |---|---|
-| `scripts/e2e/manifest-flow.mjs` | boot 自动创建 → ＋ 新建 → 销毁(清单条目移除)→ 轮询无僵尸 → 刷新恢复 |
+| `scripts/e2e/manifest-flow.mjs` | boot 空清单停空态卡片(不自动创建)→ 点卡片创建 → ＋ 新建 → 销毁(清单条目移除)→ 轮询无僵尸 → 刷新恢复 |
 | `scripts/e2e/resilience.mjs` | 空态卡片点击创建;会话已销毁 → TerminalPane 自动重建(服务端复活) |
 
 临时探索脚本(未沉淀的)可放 `/tmp/cdp-*.mjs`,但**结论场景请沉淀回 `scripts/e2e/`**。

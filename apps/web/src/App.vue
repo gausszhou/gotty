@@ -195,23 +195,13 @@ function destroyFromTab(s: SessionInfo) {
 }
 
 // 启动:读清单 → status 批量查 → 打开最近存活(lastSeen 最大);
-// 清单为空(新设备)则自动创建默认会话。
+// 清单为空(新设备/已被清空)不自动创建会话,停在空态卡片,由用户点击创建。
 onMounted(async () => {
     try {
         entries.value = loadManifest()
 
         if (entries.value.length === 0) {
-            logger.info('app', 'boot: empty manifest, creating default session')
-            const s = await createSession('')
-            upsertManifest({
-                id: s.id,
-                command: s.command,
-                args: s.args,
-                createdAt: Date.now(),
-                lastSeen: Date.now(),
-            })
-            await refreshStatus()
-            openSession({ session: s, title: '会话1' })
+            logger.info('app', 'boot: empty manifest (no auto-create, waiting for user)')
             startPolling()
             return
         }

@@ -63,9 +63,13 @@ const MANIFEST_LEN = `JSON.parse(localStorage.getItem('gotty.sessions')).length`
 await evalJS(`localStorage.clear(); sessionStorage.clear(); true`)
 await hardReload()
 
-// boot:空清单 → 自动创建默认会话
+// boot:空清单 → 不再自动创建,停在空态卡片;点击卡片创建首个会话
+await waitFor('empty card', `!!document.querySelector('.empty-card')`)
+console.log('STEP boot: empty card shown, no auto-create =', await evalJS(`!localStorage.getItem('gotty.sessions')`))
+await evalJS(`document.querySelector('.empty-card').click(); true`)
 await waitFor('boot manifest', `localStorage.getItem('gotty.sessions')`)
 console.log('STEP boot: entries =', await evalJS(MANIFEST_LEN), '| tabs =', await evalJS(`document.querySelectorAll('.tab').length`))
+await sleep(800) // 等待附着完成、圆点状态就绪
 
 // ＋ 新建第二个会话
 await evalJS(`document.querySelector('.tab-actions-left .icon-btn').click(); true`)
