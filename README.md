@@ -36,14 +36,23 @@ Run the server with your preferred command as its arguments
 your browser: the page creates a session running the command and attaches
 to it.
 
-The session id is kept in the URL (`?id=xxx`), so reloading the page
-rejoins the same running session; if the session is gone, a new one is
-created.
+Session ids are generated **by the client** (16 base36 chars). Each device
+keeps its own session list in `localStorage`; the server keeps records by
+id only and never exposes a global session list. Reloading the page
+rejoins the most recently opened alive session (same id = same session).
+Sessions that disappear server-side (destroyed, idle-expired, process
+exit) are pruned from the device list on the next status poll; their
+server records remain, so the same id can still be **resurrected** via
+`POST /api/sessions` (recorded command, `run_count` increments), e.g.
+from another device that knows the id. Different devices use different
+ids and never preempt each other; the same id re-attach still preempts
+(WS close 1013).
 
 Starting without a command (`gotty serve`) falls back to the login shell
 (`$SHELL`, or `/bin/sh` when unset) as the default session command, so the
 page always opens with a usable terminal. An explicit command in
-`POST /api/sessions` always takes precedence.
+`POST /api/sessions` always takes precedence (except for resurrected
+sessions, which use the recorded command).
 
 ## Options
 
@@ -55,7 +64,7 @@ page always opens with a usable terminal. An explicit command in
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
-    --timeout int           Idle timeout seconds for destroying unattached sessions (default: 0 = disabled) [$GOTTY_TIMEOUT]
+    --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900) [$GOTTY_TIMEOUT]
     --width int             Static width of the screen, 0(default) means dynamically resize [$GOTTY_WIDTH]
     --height int            Static height of the screen, 0(default) means dynamically resize [$GOTTY_HEIGHT]
     --ws-origin string      A regular expression that matches origin URLs to be accepted by WebSocket [$GOTTY_WS_ORIGIN]
@@ -65,7 +74,7 @@ page always opens with a usable terminal. An explicit command in
     --tls-key string        TLS/SSL key file path (default: "~/.gotty.key") [$GOTTY_TLS_KEY]
     --log-file string       Server log file path (default: "~/.gotty/logs/gotty.log", empty = console only) [$GOTTY_LOG_FILE]
     --close-signal int      Signal sent to the command process when the session is closed (default: 1 = SIGHUP) [$GOTTY_CLOSE_SIGNAL]
-    --close-timeout int     Time in seconds to force kill process after the session is closed (default: -1 = disabled) [$GOTTY_CLOSE_TIMEOUT]
+    --close-timeout int     Time in seconds to force kill process after the session is closed (default: 3, -1 = wait forever) [$GOTTY_CLOSE_TIMEOUT]
     --config string         Config file path (default: "~/.gotty/config.json") [$GOTTY_CONFIG]
 -v, --version               print the version
 ```
@@ -118,10 +127,12 @@ openssl req -x509 -nodes -days 9999 -newkey rsa:2048 -keyout ~/.gotty.key -out ~
 ## Sharing with Multiple Clients
 
 Each session runs one process, shared across page reloads: while one client
-is attached, a second attach to the same session is rejected, but when the
-attached client disconnects the process keeps running and any client with
-the session URL can rejoin. For multiple *simultaneous* viewers, use a
-terminal multiplexer:
+is attached, a second attach to the **same session id** preempts the first
+(WS close 1013 "session preempted"), and once the attached client
+disconnects the process keeps running, so a refresh (same id) resumes it.
+Every device generates its own ids, so multiple devices never preempt each
+other — the same id only means the same session. For multiple *simultaneous*
+viewers of one session, use a terminal multiplexer:
 
 ```sh
 $ gotty tmux new -A -s gotty top
@@ -142,24 +153,31 @@ $ tmux new -A -s gotty
 
 ```
 POST   /api/sessions               create a session (empty command uses the default command)
-GET    /api/sessions               list all sessions
-GET    /api/sessions/history       list persisted session history
+POST   /api/sessions/status        query liveness of client manifest ids {"ids": [...]}
 GET    /api/sessions/:id           session detail
-PUT    /api/sessions/:id/title     rename a session (persisted, alive or historical)
+PUT    /api/sessions/:id/title     rename a session (persisted in the record)
 DELETE /api/sessions/:id           destroy a session
 POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
 ```
 
+The server no longer lists sessions: the list lives on the client
+(`localStorage["gotty.sessions"]`), so `GET /api/sessions` and
+`GET /api/sessions/history` have been removed. `POST /api/sessions` accepts
+an optional client-chosen `id` (16 base36 chars): an alive id is returned
+as-is (`200`, idempotent), an id with a server record is **resurrected**
+(recorded command/args, `run_count+1`), and an unknown/new id (or no id —
+legacy clients) creates a fresh session.
+
 Example:
 
 ```sh
 $ curl -X POST localhost:8080/api/sessions \
-    -d '{"command": "top", "width": 120, "height": 40}'
-{"id":"a1b2c3d4","state":"idle","command":"top","args":[],"pid":1234,"exited":false,"created_at":"..."}
+    -d '{"id":"abc123abc123abca", "command": "top", "width": 120, "height": 40}'
+{"id":"abc123abc123abca","state":"idle","command":"top","args":[],"pid":1234,"exited":false,"created_at":"..."}
 
-$ curl localhost:8080/api/sessions
-{"sessions":[{"id":"a1b2c3d4","state":"running","command":"top", ...}]}
+$ curl -X POST localhost:8080/api/sessions/status -d '{"ids":["abc123abc123abca"]}'
+{"sessions":{"abc123abc123abca":{"id":"abc123abc123abca","state":"idle", ...}}}
 ```
 
 ### WebSocket

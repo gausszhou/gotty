@@ -206,11 +206,10 @@ const (
 
 ```
 会话管理
-  POST   /api/sessions              创建会话
-  GET    /api/sessions              列出所有会话
-  GET    /api/sessions/history      列出持久化的会话历史(跨重启)
+  POST   /api/sessions              创建会话(客户端 id → 幂等/复活;无 id 服务端生成)
+  POST   /api/sessions/status       批量查询清单 id 的存活状态 {"ids": [...]}
   GET    /api/sessions/:id          查看会话详情
-  PUT    /api/sessions/:id/title    重命名会话(持久化,活会话与历史均可)
+  PUT    /api/sessions/:id/title    重命名会话(持久化到记录)
   DELETE /api/sessions/:id          销毁会话
 
 会话控制
@@ -218,11 +217,20 @@ const (
   POST   /api/sessions/:id/signal   发送信号 (SIGINT, SIGKILL...)
 ```
 
-> 实施注记：会话历史由 `session.Store` 持久化，默认实现为
-> `FileStore`（JSON 文件，`--session-file`，默认
-> `~/.gotty.sessions.json`），原子写（tmp+rename）。销毁/空闲超时
-> 的会话仅从注册表移除，记录保留在历史中；前端不保留任何本地持久化，
-> 历史一律从服务端获取。
+> 实施注记：会话 id 由客户端生成(16 位 base36)。设备把会话清单保存在
+> localStorage(`gotty.sessions`),服务端**不提供会话列表端点**
+> (`GET /api/sessions` 与 `GET /api/sessions/history` 已删除),只按 id
+> 保留记录(`FileStore`,map[id],原子写):同 id 存活 → 幂等返回现有会话
+> (200);有记录 → 复活(用记录 command/args 重建同 id,`run_count+1`);
+> 无 id → 服务端生成(兼容旧客户端)。会话记录数组格式的旧文件在加载时
+> 自动迁移为 map 并原子重写。
+
+**为什么是 `POST /api/sessions/status` 轮询,而不是服务端列表端点:**
+
+1. **清单是客户端的**——"这台设备上有什么会话"由 localStorage 决定,服务端不知道、也不该知道设备清单;全量列表端点(GET /api/sessions)反而会把**其他设备**的会话混进来。
+2. **按需查询、增量极小**——客户端只提交自己清单里的 id(通常个位数),服务端只回存活者,响应体小、无全表扫描;即便客户端换了设备、id 失效也只是"查不到"。
+3. **2s 轮询是简单可靠的进度源**——页签消失(空闲淘汰/销毁/退出)、圆点状态、清单自动清理都依赖它;相比多路 WS 推送(见 docs/ws-multiplex.md,搁置)轮询无连接管理成本,且 HTTP 缓存友好。
+4. **语义幂等**——status 只读、不产生副作用,失败可静默降级(保留旧列表),网络抖动不会破坏清单。
 
 ### 5.2 WebSocket
 
@@ -233,25 +241,27 @@ const (
 ### 5.3 请求/响应示例
 
 ```json
-// POST /api/sessions
+// POST /api/sessions —— 客户端生成 id(幂等/复活;201 新建,200 幂等命中)
 // Request:
-{ "command": "bash", "args": [], "width": 80, "height": 24 }
+{ "id": "abc123abc123abca", "command": "bash", "args": [], "width": 80, "height": 24 }
 
 // Response:
 {
-  "id": "a1b2c3d4",
+  "id": "abc123abc123abca",
   "state": "idle",
   "command": "bash",
   "created_at": "2026-01-01T00:00:00Z"
 }
 
-// GET /api/sessions
-// Response:
+// POST /api/sessions/status —— 客户端清单 2s 轮询存活状态
+// Request:
+{ "ids": ["abc123abc123abca", "abc123abc123abcb"] }
+
+// Response(仅存活会话,按 id 键控):
 {
-  "sessions": [
-    { "id": "a1b2c3d4", "state": "running", "command": "bash" },
-    { "id": "e5f6g7h8", "state": "idle", "command": "top" }
-  ]
+  "sessions": {
+    "abc123abc123abca": { "id": "abc123abc123abca", "state": "running", "command": "bash" }
+  }
 }
 ```
 
@@ -448,15 +458,22 @@ make
 - **`max_connection` → `max-session`**：限制并发存活会话数，0 表示不限。
 - **WS 无认证握手**：连接建立后直接附着，不再有 init 帧与 token
   校验；访问控制交由部署层（反向代理、TLS）决定。
-- **单客户端附着**：一个会话同一时刻只允许一个客户端附着（第二个附着
-  返回 WS 1013 *Try Again Later*），与状态机 `IDLE/RUNNING` 一致；
-  断线后 PTY 存活，可用同一 `?id=` 重连。
+- **单客户端附着**：一个会话同一时刻只允许一个客户端附着（同 id 的
+  第二个附着返回 WS 1013 *Try Again Later*，旧客户端被抢占），与状态机
+  `IDLE/RUNNING` 一致；断线后 PTY 存活，刷新/重连用同一 id 恢复。
+  不同设备各用各的 id,互不抢占。
+- **会话关闭默认有限等待**：`--close-timeout` 默认 3s——Close 先向进程
+  组发 close-signal(SIGHUP),超时后 SIGKILL 整个进程组。SIGHUP 可能被
+  忽略(nohup/非交互 shell 启动的服务,子进程继承 SIG_IGN),无限等待
+  (-1)会让 `DELETE /api/sessions/:id` 永久卡住;进程组信号保证
+  `sh -c` 派生的子进程也被回收。
 
 ### 12.3 测试
 
 - `internal/terminal/protocol_test.go`：二进制协议编解码。
 - `internal/session/manager_test.go`：生命周期、MaxSession、空闲超时、
-  附着协议全流程（stub terminal 注入，确定性断言）。
+  附着协议全流程、`CreateWithID` 幂等/复活(run_count)、`Status` 批量、
+  FileStore 旧数组格式迁移（stub terminal 注入，确定性断言）。
 - `internal/api/handlers_test.go`：httptest + 真实 PTY 的端到端：
-  REST CRUD、WS 握手/认证/繁忙拒绝、`cat` 会话输入回显、断线重连、
-  清扫移除退出会话。
+  REST CRUD、客户端 id 幂等/复活/格式校验、status 批量、WS 抢占、
+  `cat` 会话输入回显、断线重连、清扫移除退出会话。
