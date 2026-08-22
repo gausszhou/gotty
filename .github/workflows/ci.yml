@@ -38,11 +38,13 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Test
-        run: make test
-
+      # build 必须先于 test:make build 的 frontend/static 链路会生成
+      # internal/api/static 产物,go:embed all:static 在编译期需要该目录存在
       - name: Build
         run: make build
+
+      - name: Test
+        run: make test
 
       - name: Verify binary runs
         run: ./gotty --version
