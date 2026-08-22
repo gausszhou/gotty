@@ -30,7 +30,8 @@
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import Terminal from './Terminal.vue'
 import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
-import { getSession } from '../utils/api'
+import { getSession, createSession } from '../utils/api'
+import { findManifestEntry, upsertManifest } from '../utils/manifest'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
@@ -43,6 +44,8 @@ const emit = defineEmits<{
     (e: 'close'): void
     // 实测 RTT(毫秒),由上层展示在页签标题旁
     (e: 'latency', ms: number | null): void
+    // WS 连接状态(connected = 本设备已成功附着),圆点即时变绿
+    (e: 'conn', connected: boolean): void
 }>()
 
 type ConnState = 'connecting' | 'connected' | 'disconnected' | 'gone'
@@ -53,13 +56,38 @@ const overlayMessage = ref('')
 
 let wsWrapper: WSWrapper | null = null
 
-// resolveSession 确认绑定会话仍然存活;销毁后返回 null。
+// resolveSession 确认绑定会话仍然存活。会话已销毁/消失时(空闲淘汰、
+// 其他设备销毁、进程退出),用清单记录**直接重建**(服务端复活同 id),
+// 而不是报"会话已销毁";重建也失败才返回 null。
 const resolveSession = async (): Promise<string | null> => {
     const session = await getSession(props.sessionId)
     if (session && session.state !== 'destroyed' && !session.exited) {
         return session.id
     }
-    return null
+    return rebuildSession()
+}
+
+// rebuildSession:凭清单中的 command/args 重新创建同 id 会话。
+// 服务端有记录则复活(记录命令,run_count+1);无清单条目时用默认命令。
+// 重建成功后把会话加回本设备清单(可能已被轮询清理),保持清单一致。
+async function rebuildSession(): Promise<string | null> {
+    const entry = findManifestEntry(props.sessionId)
+    logger.info('attach', 'session %s gone, rebuilding (command=%s)', props.sessionId, entry?.command ?? '(default)')
+    try {
+        const s = await createSession(entry?.command ?? '', entry?.args ?? [], props.sessionId)
+        upsertManifest({
+            id: s.id,
+            command: s.command,
+            args: s.args,
+            createdAt: entry?.createdAt ?? Date.now(),
+            lastSeen: Date.now(),
+        })
+        logger.info('attach', 'session rebuilt: %s', s.id)
+        return s.id
+    } catch (err) {
+        logger.warn('attach', 'failed to rebuild session=%s: %s', props.sessionId, err)
+        return null
+    }
 }
 
 // xterm 组件暴露的能力,直接映射给收发层
@@ -129,6 +157,9 @@ function close() {
 
 onMounted(attach)
 
+// 连接状态变化 → 上报上层(页签圆点即时变色)
+watch(connState, (v) => emit('conn', v === 'connected'))
+
 // v-show 从隐藏切回可见时,容器尺寸恢复,重新 fit 终端
 watch(
     () => props.active,
@@ -170,7 +201,7 @@ onBeforeUnmount(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--overlay);
     z-index: 10;
 }
 
@@ -178,8 +209,8 @@ onBeforeUnmount(() => {
     min-width: 320px;
     max-width: 420px;
     padding: 16px;
-    background: #252526; /* VSCode 对话框背景 */
-    border: 1px solid #454545;
+    background: var(--bg-dialog); /* VSCode 对话框背景 */
+    border: 1px solid var(--border-dialog);
     border-radius: 6px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     display: flex;
@@ -190,12 +221,12 @@ onBeforeUnmount(() => {
 .dialog-title {
     font-size: 15px;
     font-weight: 600;
-    color: #ffffff;
+    color: var(--fg-bright);
 }
 
 .dialog-message {
     font-size: 13px;
-    color: #cccccc;
+    color: var(--fg);
     line-height: 1.5;
     word-break: break-word;
 }
@@ -210,30 +241,32 @@ onBeforeUnmount(() => {
 .btn-primary {
     height: 26px;
     padding: 0 14px;
-    background: #0e639c; /* VSCode 主按钮 */
+    background: var(--accent); /* VSCode 主按钮 */
     border: none;
     border-radius: 3px;
-    color: #ffffff;
+    color: var(--fg-bright);
     font-size: 12px;
     cursor: pointer;
 }
 
 .btn-primary:hover {
-    background: #1177bb;
+    background: var(--accent);
+    filter: brightness(1.1);
 }
 
 .btn-secondary {
     height: 26px;
     padding: 0 14px;
-    background: #3a3d41; /* VSCode 次按钮 */
+    background: var(--bg-tab-hover); /* VSCode 次按钮 */
     border: none;
     border-radius: 3px;
-    color: #cccccc;
+    color: var(--fg);
     font-size: 12px;
     cursor: pointer;
 }
 
 .btn-secondary:hover {
-    background: #45494e;
+    background: var(--bg-tab-hover);
+    filter: brightness(1.15);
 }
 </style>

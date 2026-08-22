@@ -1,11 +1,9 @@
 <template>
-  <div class="tab-bar" @click="closeAllPops">
+  <div class="tab-bar">
     <!-- 新建会话(固定在左侧) -->
     <div class="tab-actions tab-actions-left">
       <button class="icon-btn" title="新建会话" @click="create">＋</button>
     </div>
-
-    <!-- 会话页签(活会话) -->
     <div
       v-for="item in displayList"
       :key="item.session.id"
@@ -18,7 +16,7 @@
       <span class="state-dot" :class="stateClass(item.session)"></span>
       <input
         v-if="renamingId === item.session.id"
-        ref="renameInputRef"
+        :ref="setRenameInputRef"
         v-model="renameDraft"
         class="rename-input"
         spellcheck="false"
@@ -28,10 +26,10 @@
         @blur="commitRename"
       />
       <span v-else class="tab-title">{{ item.title }}</span>
-      <button class="tab-close" title="销毁会话（历史保留，可重新运行）" @click.stop="destroy(item.session)">✕</button>
+      <button class="tab-close" title="销毁会话" @click.stop="destroy(item.session)">✕</button>
     </div>
 
-    <!-- 会话历史(固定在右侧) -->
+    <!-- 右侧:网络状态 + 主题切换 -->
     <div class="tab-actions">
       <div
         v-if="latency != null"
@@ -39,60 +37,38 @@
         :class="netClass"
         :title="'往返延迟(RTT),每 ' + PING_PERIOD_S + ' 秒刷新'"
       >
-        {{ latency }}ms<template v-if="jitter != null"> · 抖动 {{ jitter }}ms</template>
+        {{ latency }}ms
       </div>
-      <button class="icon-btn" title="会话历史" @click.stop="toggleHistory">▾</button>
-    </div>
-
-    <!-- 历史下拉（服务端持久化） -->
-    <div v-if="historyOpen" class="history-pop" @click.stop>
-      <div class="history-head">HISTORY</div>
-      <div
-        v-for="item in historyList"
-        :key="'h' + item.history.id"
-        class="history-item"
-        :title="'重新运行: ' + item.history.command"
-        @click="rerun(item)"
-      >
-        <span class="history-title">{{ item.title }}</span>
-        <span class="history-cmd">{{ item.history.command }}</span>
-      </div>
-      <div class="history-item history-empty">暂无历史</div>
-    </div>
-
-    <!-- 历史重跑确认弹窗 -->
-    <div v-if="confirmItem" class="tab-overlay" @mousedown.stop>
-      <div class="vsc-dialog">
-        <div class="dialog-title">重新运行</div>
-        <div class="dialog-message">
-          <span class="mono">{{ confirmItem.history.command }}</span>
-          <span v-if="confirmItem.history.args.length" class="mono dim">
-            &nbsp;{{ confirmItem.history.args.join(' ') }}
-          </span>
-        </div>
-        <div class="dialog-actions">
-          <button class="btn-primary" @click="doRerun">运行</button>
-          <button class="btn-secondary" @click="confirmItem = null">取消</button>
-        </div>
-      </div>
+      <button
+        class="icon-btn"
+        :title="theme === 'light' ? '切换到暗色主题' : '切换到亮色主题'"
+        @click="toggle"
+      >{{ theme === 'light' ? '☾' : '☀' }}</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
+import { destroySession, renameSession, type SessionInfo } from '../utils/api'
 import {
-    listSessions, listHistory, createSession, destroySession, renameSession,
-    type SessionInfo, type HistoryInfo,
-} from '../utils/api'
+    upsertManifest, removeFromManifest,
+    type ManifestEntry,
+} from '../utils/manifest'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
+    // 设备会话清单(localStorage)
+    entries: ManifestEntry[]
+    // 清单中服务端存活的会话(status 轮询结果)
+    alive: SessionInfo[]
+    // 本设备各打开视图的 WS 连接状态(id → 已附着),圆点即时变绿
+    connected?: Record<string, boolean>
+    // 当前主题(驱动 ☾/☀ 图标)
+    theme?: string
     activeSessionId?: string
-    // 当前激活会话的实测 RTT(毫秒)与网络抖动(相邻采样差均值),
-    // 展示在标题栏(顶部栏)右侧,颜色按延迟分级。
+    // 当前激活会话的实测 RTT(毫秒),展示在标题栏(顶部栏)右侧,颜色按延迟分级。
     latency?: number | null
-    jitter?: number | null
 }>()
 
 // 与 ws.ts 的心跳周期保持一致,用于提示"延迟刷新率"
@@ -109,104 +85,70 @@ const netClass = computed(() => {
 
 const emit = defineEmits<{
     (e: 'open', detail: { session: SessionInfo; title: string }): void
-    (e: 'rename', detail: { id: string; title: string }): void
     (e: 'destroy', session: SessionInfo): void
+    // 请求新建会话(创建逻辑在上层 App 统一,顶部 ＋ 与空态卡片共用)
+    (e: 'create'): void
+    // 请求切换亮/暗主题(applyTheme + 广播在上层 App)
+    (e: 'theme'): void
+    // 清单/存活状态已改变,请求上层重新拉取
+    (e: 'changed'): void
 }>()
 
-const sessions = ref<SessionInfo[]>([])
-const history = ref<HistoryInfo[]>([])
-
-// 本次会话内的重命名覆盖(持久化由服务端承担,PUT title)
-const renamed = ref<Record<string, string>>({})
+// 主题切换按钮 → App 处理(toggleTheme + notify)
+function toggle() {
+    emit('theme')
+}
 
 const renamingId = ref<string | null>(null)
 const renameDraft = ref('')
-const renameInputRef = ref<HTMLInputElement>()
-
-const historyOpen = ref(false)
-const confirmItem = ref<{ history: HistoryInfo } | null>(null)
-
-let timer: ReturnType<typeof setInterval>
-
-// 页签按创建时间(created_at 升序)编号:会话N
-const displayList = computed(() => {
-    const asc = [...sessions.value].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
-    return asc.map((session) => ({
-        session,
-        title: renamed.value[session.id] || session.title || `会话${asc.indexOf(session) + 1}`,
-    }))
-})
-
-const historyList = computed(() => {
-    const asc = [...history.value].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
-    return asc.map((h) => ({
-        history: h,
-        title: renamed.value[h.id] || h.title || `会话${sessions.value.length + asc.indexOf(h) + 1}`,
-    }))
-})
-
-async function refresh() {
-    try {
-        sessions.value = await listSessions()
-    } catch {
-        // 服务端不可用,保留旧列表
-    }
-    try {
-        history.value = await listHistory()
-    } catch {
-        // 忽略
-    }
+// 函数 ref:v-for 内的字符串 ref 会被收集成数组导致 .focus() 失效,
+// 函数 ref 每次只收到单个元素(卸载时为 null)。
+const renameInputRef = ref<HTMLInputElement | null>(null)
+function setRenameInputRef(el: unknown) {
+    renameInputRef.value = el as HTMLInputElement | null
 }
+
+const entryById = computed(() => new Map(props.entries.map((e) => [e.id, e])))
+
+// 页签 = 清单中存活的会话,按服务端 created_at 升序编号(会话N)
+const displayList = computed(() => {
+    const alive = [...props.alive].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
+    return alive.map((session) => {
+        const entry = entryById.value.get(session.id)
+        const title = entry?.title || session.title || `会话${alive.indexOf(session) + 1}`
+        return { session, title }
+    })
+})
 
 function open(item: { session: SessionInfo; title: string }) {
     if (item.session.state === 'destroyed' || item.session.exited) return
     emit('open', { session: item.session, title: item.title })
 }
 
-async function create() {
-    logger.info('tab', 'create new session (default command)')
-    const s = await createSession('')
-    await refresh()
-    const item = displayList.value.find((x) => x.session.id === s.id)
-    emit('open', { session: s, title: item?.title || s.title || s.command })
+// 新建:交由上层 App(生成 id + 创建 + 写清单 + 打开)
+function create() {
+    logger.info('tab', 'create request → app')
+    emit('create')
 }
 
+// 销毁:服务端销毁(记录保留,可凭 id 复活)+ 本设备清单移除
 async function destroy(s: SessionInfo) {
-    logger.info('tab', 'destroy session=%s (history kept)', s.id)
+    logger.info('tab', 'destroy session=%s (record kept, manifest entry removed)', s.id)
     await destroySession(s.id)
-    sessions.value = sessions.value.filter((x) => x.id !== s.id)
+    removeFromManifest(s.id)
     emit('destroy', s)
+    emit('changed')
 }
 
-// ── 历史:下拉 + 重跑确认 ──
-function toggleHistory() {
-    historyOpen.value = !historyOpen.value
-    refresh()
-}
-
-function closeAllPops() {
-    historyOpen.value = false
-}
-
-function rerun(item: { history: HistoryInfo }) {
-    historyOpen.value = false
-    confirmItem.value = item
-}
-
-async function doRerun() {
-    const h = confirmItem.value?.history
-    confirmItem.value = null
-    if (!h) return
-    const s = await createSession(h.command, h.args)
-    await refresh()
-    emit('open', { session: s, title: renamed.value[s.id] || h.title || `会话${sessions.value.length + history.value.length}` })
-}
-
-// ── 双击重命名(持久化到服务端) ──
+// ── 双击重命名(清单 + 服务端记录双写) ──
 function startRename(item: { session: SessionInfo; title: string }) {
     renamingId.value = item.session.id
-    renameDraft.value = renamed.value[item.session.id] || item.title
-    nextTick(() => renameInputRef.value?.focus())
+    renameDraft.value = item.title
+    // 聚焦并全选(类似 VSCode 重命名):直接输入即覆盖原标题
+    nextTick(() => {
+        renameInputRef.value?.focus()
+        renameInputRef.value?.select()
+    })
 }
 
 async function commitRename() {
@@ -215,17 +157,15 @@ async function commitRename() {
     const title = renameDraft.value.trim()
     renamingId.value = null
 
-    if (title === '') {
-        delete renamed.value[id]
-    } else {
-        renamed.value[id] = title
+    const entry = entryById.value.get(id)
+    if (entry) {
+        upsertManifest({ ...entry, title: title || undefined })
     }
     try {
         await renameSession(id, title)
     } catch {
-        // 服务端保存失败时本次会话内仍生效
+        // 服务端保存失败时清单仍保留本次重命名
     }
-    emit('rename', { id, title })
 }
 
 function cancelRename() {
@@ -233,29 +173,22 @@ function cancelRename() {
 }
 
 function stateClass(s: SessionInfo): string {
+    // 本设备已成功附着 → 即时绿(不等 status 轮询)
+    if (props.connected?.[s.id]) return 'dot-running'
     if (s.exited || s.state === 'destroyed') return 'dot-dead'
     if (s.state === 'running') return 'dot-running'
     return 'dot-idle'
 }
-
-onMounted(() => {
-    refresh()
-    timer = setInterval(refresh, 2000)
-})
-
-onBeforeUnmount(() => {
-    clearInterval(timer)
-})
 </script>
 
 <style scoped>
 .tab-bar {
     display: flex;
     align-items: stretch;
-    height: 35px;
+    height: 30px;
     flex: 0 0 auto;
-    background: #252526;
-    border-bottom: 1px solid #1e1e1e;
+    background: var(--bg-bar);
+    border-bottom: 1px solid var(--bg-bar-border);
     overflow-x: auto;
     overflow-y: hidden;
     position: relative;
@@ -269,20 +202,20 @@ onBeforeUnmount(() => {
     max-width: 200px;
     min-width: 100px;
     padding: 0 8px;
-    border-right: 1px solid #1e1e1e;
-    color: #969696;
+    border-right: 1px solid var(--bg-bar-border);
+    color: var(--fg-dim);
     font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
     flex: 0 0 auto;
-    background: #2d2d2d;
-    border-top: 1px solid #333;
+    background: var(--bg-tab);
+    border-top: 1px solid var(--border-tab);
 }
 
 .tab.active {
-    background: #1e1e1e;
-    color: #ffffff;
-    border-top: 1px solid #007fd4; /* VSCode 活动页签顶条 */
+    background: var(--bg-tab-active);
+    color: var(--fg-bright);
+    border-top: 1px solid var(--accent); /* VSCode 活动页签顶条 */
 }
 
 .tab-title {
@@ -306,15 +239,15 @@ onBeforeUnmount(() => {
 }
 
 .net-good {
-    color: #3fb950; /* 绿:<30ms */
+    color: var(--net-good); /* 绿:<30ms */
 }
 
 .net-fair {
-    color: #d29922; /* 黄:30~100ms */
+    color: var(--net-fair); /* 黄:30~100ms */
 }
 
 .net-bad {
-    color: #f85149; /* 红:≥100ms */
+    color: var(--net-bad); /* 红:≥100ms */
 }
 
 .state-dot {
@@ -325,21 +258,21 @@ onBeforeUnmount(() => {
 }
 
 .dot-idle {
-    background: #6e7681;
+    background: var(--dot-idle);
 }
 
 .dot-running {
-    background: #3fb950;
+    background: var(--dot-running);
 }
 
 .dot-dead {
-    background: #f85149;
+    background: var(--dot-dead);
 }
 
 .tab-close {
     background: none;
     border: none;
-    color: #969696;
+    color: var(--fg-dim);
     font-size: 11px;
     line-height: 1;
     padding: 2px 4px;
@@ -357,17 +290,17 @@ onBeforeUnmount(() => {
 }
 
 .tab-close:hover {
-    background: #3a3d41;
-    color: #ffffff;
+    background: var(--bg-tab-hover);
+    color: var(--fg-bright);
 }
 
 .rename-input {
     flex: 1 1 auto;
     height: 20px;
     padding: 0 4px;
-    background: #3c3c3c;
-    border: 1px solid #007fd4;
-    color: #cccccc;
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    color: var(--fg);
     font-size: 13px;
     outline: none;
     min-width: 0;
@@ -382,7 +315,7 @@ onBeforeUnmount(() => {
     flex: 0 0 auto;
     position: sticky;
     right: 0;
-    background: #252526;
+    background: var(--bg-bar);
 }
 
 /* 新建会话固定在左侧,滚动时保持可见 */
@@ -396,7 +329,7 @@ onBeforeUnmount(() => {
 .icon-btn {
     background: none;
     border: none;
-    color: #cccccc;
+    color: var(--fg);
     font-size: 14px;
     cursor: pointer;
     padding: 2px 8px;
@@ -405,152 +338,7 @@ onBeforeUnmount(() => {
 }
 
 .icon-btn:hover {
-    background: #3a3d41;
-    color: #ffffff;
-}
-
-/* ── 历史下拉 ── */
-.history-pop {
-    position: absolute;
-    top: 35px;
-    right: 6px;
-    min-width: 240px;
-    max-width: 320px;
-    max-height: 60vh;
-    overflow-y: auto;
-    background: #252526;
-    border: 1px solid #454545;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    z-index: 30;
-    padding: 4px 0;
-}
-
-.history-head {
-    padding: 6px 12px 2px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    color: #6e7681;
-}
-
-.history-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 12px;
-    cursor: pointer;
-    font-size: 13px;
-    color: #cccccc;
-}
-
-.history-item:hover {
-    background: #094771;
-    color: #ffffff;
-}
-
-.history-title {
-    flex: 1 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.history-cmd {
-    flex: 0 1 auto;
-    max-width: 50%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #8b949e;
-    font-family: 'SF Mono', Consolas, monospace;
-    font-size: 11px;
-}
-
-.history-empty {
-    color: #6e7681;
-    cursor: default;
-}
-
-/* ── 重跑确认弹窗 ── */
-.tab-overlay {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 40;
-}
-
-.vsc-dialog {
-    min-width: 280px;
-    max-width: 360px;
-    padding: 16px;
-    background: #252526;
-    border: 1px solid #454545;
-    border-radius: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.dialog-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: #ffffff;
-}
-
-.dialog-message {
-    font-size: 13px;
-    color: #cccccc;
-    line-height: 1.5;
-    word-break: break-word;
-}
-
-.mono {
-    font-family: 'SF Mono', Consolas, monospace;
-}
-
-.mono.dim {
-    color: #8b949e;
-}
-
-.dialog-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 4px;
-}
-
-.btn-primary {
-    height: 26px;
-    padding: 0 14px;
-    background: #0e639c;
-    border: none;
-    border-radius: 3px;
-    color: #ffffff;
-    font-size: 12px;
-    cursor: pointer;
-}
-
-.btn-primary:hover {
-    background: #1177bb;
-}
-
-.btn-secondary {
-    height: 26px;
-    padding: 0 14px;
-    background: #3a3d41;
-    border: none;
-    border-radius: 3px;
-    color: #cccccc;
-    font-size: 12px;
-    cursor: pointer;
-}
-
-.btn-secondary:hover {
-    background: #45494e;
+    background: var(--bg-tab-hover);
+    color: var(--fg-bright);
 }
 </style>

@@ -9,6 +9,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
+import { currentTheme, onThemeChange, type Theme } from '../utils/theme'
 
 const emit = defineEmits<{
     // 服务端 SetWindowTitle 帧;不再直接写 document.title,
@@ -16,18 +17,44 @@ const emit = defineEmits<{
     (e: 'title', title: string): void
 }>()
 
+// VSCode 集成终端默认字体(platform monospace)的跨平台栈:
+// macOS → Menlo/Monaco,Windows → Consolas,Linux → DejaVu Sans Mono。
+const FONT_FAMILY =
+    'Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Courier New", monospace'
+
 const terminalEl = ref<HTMLElement>()
 let term: XTerminal
 let fitAddon: FitAddon
 let resizeHandler: () => void
+let unsubscribeTheme: (() => void) | null = null
+
+// 终端内部配色跟随亮/暗主题(与页面 CSS 变量一致)
+function terminalTheme(theme: Theme): Record<string, string> {
+    if (theme === 'light') {
+        return {
+            background: '#ffffff',
+            foreground: '#1a1a1a',
+            cursor: '#1a1a1a',
+            cursorAccent: '#ffffff',
+            selectionBackground: '#cfe3f7',
+            selectionForeground: '#1a1a1a',
+        }
+    }
+    return {
+        background: '#000000',
+        foreground: '#cccccc',
+        cursor: '#cccccc',
+        cursorAccent: '#000000',
+        selectionBackground: '#333333',
+    }
+}
 
 onMounted(() => {
   term = new XTerminal({
     cursorBlink: true,
     fontSize: 14,
-    fontFamily:
-      '"DejaVu Sans Mono", "Everson Mono", FreeMono, Menlo, Terminal, monospace, "Apple Symbols"',
-    theme: { background: '#000000' },
+    fontFamily: FONT_FAMILY,
+    theme: terminalTheme(currentTheme()),
   })
 
   fitAddon = new FitAddon()
@@ -44,6 +71,10 @@ onMounted(() => {
 
   term.open(terminalEl.value!)
 
+  // xterm.css 的 .terminal 规则自带默认等宽字体;显式覆盖到元素上,
+  // 保证 WebGL 与 DOM 两种渲染路径都使用配置的字体栈。
+  ;(term.element as HTMLElement).style.fontFamily = FONT_FAMILY
+
   resizeHandler = () => {
     fitAddon.fit()
   }
@@ -52,10 +83,16 @@ onMounted(() => {
     resizeHandler()
     window.addEventListener('resize', resizeHandler)
   })
+
+  // 跟随亮/暗主题,动态切换 xterm 内部的配色
+  unsubscribeTheme = onThemeChange((theme) => {
+    term.options.theme = terminalTheme(theme)
+  })
 })
 
 onBeforeUnmount(() => {
   if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  unsubscribeTheme?.()
   term?.dispose()
 })
 

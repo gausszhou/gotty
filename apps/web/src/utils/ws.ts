@@ -73,6 +73,9 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
     let pingTimer: ReturnType<typeof setInterval> | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let pendingPingAt: number | null = null
+    // xterm 的 onData/onResize 是累加事件:每次 connect 若重新注册,
+    // 重连后一次按键会发送多次输入 → 输入输出重复。只注册一次。
+    let inputBound = false
 
     const clearTimers = () => {
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
@@ -80,6 +83,17 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
     }
 
     const connect = (sid: string) => {
+        // 单连接语义:新连接抢占旧连接 —— 先关闭旧连接并摘除其回调,
+        // 避免旧连接的 onclose 再触发断开/重连逻辑,也避免计时器叠加。
+        clearTimers()
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+            const old = ws
+            old.onopen = null
+            old.onmessage = null
+            old.onclose = null
+            try { old.close() } catch { /* 已关闭的忽略 */ }
+        }
+
         const scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://'
         const url = `${scheme}${window.location.host}/ws?session_id=${encodeURIComponent(sid)}`
         ws = new WebSocket(url, WS_PROTOCOLS)
@@ -90,14 +104,18 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
             logger.info('ws', 'connected session=%s', sid)
             hooks.onConnect?.()
 
-            term.onInput((input) => {
-                if (ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_INPUT, input))
-            })
-            term.onResize((columns, rows) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
-                }
-            })
+            // 回调只绑定一次;闭包引用的是最新 ws 变量,始终发往当前连接
+            if (!inputBound) {
+                inputBound = true
+                term.onInput((input) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_INPUT, input))
+                })
+                term.onResize((columns, rows) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
+                    }
+                })
+            }
             const { columns, rows } = term.info()
             ws.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
 
@@ -107,7 +125,7 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
             ws.send(encode(MSG_PING))
             pingTimer = setInterval(() => {
                 pendingPingAt = performance.now()
-                ws.send(encode(MSG_PING))
+                if (ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_PING))
             }, 2000)
         }
 
@@ -171,6 +189,11 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
         close() {
             closed = true
             clearTimers()
+            if (ws) {
+                ws.onopen = null
+                ws.onmessage = null
+                ws.onclose = null
+            }
             ws?.close()
         },
         reconnect() {

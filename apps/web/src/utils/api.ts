@@ -1,4 +1,6 @@
 // 与 GoTTY REST API 通信的薄封装。
+// 会话列表由客户端 localStorage 清单(utils/manifest.ts)驱动,
+// 服务端只提供:创建(幂等/复活)、详情、状态批量查询、销毁、重命名。
 import { logger } from './logger'
 
 export interface SessionInfo {
@@ -10,20 +12,6 @@ export interface SessionInfo {
     exited: boolean;
     title?: string; // 显示名(空 = 自动编号)
     created_at: string;
-}
-
-// 服务端持久化的历史会话记录(id/command/args/title/state/created_at)
-export interface HistoryInfo {
-    id: string;
-    command: string;
-    args: string[];
-    title?: string;
-    state: string;
-    created_at: number; // unix 秒
-}
-
-export interface SessionList {
-    sessions: SessionInfo[];
 }
 
 export class APIError extends Error {
@@ -56,27 +44,39 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
     return res.json() as Promise<T>;
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
-    const data = await fetchJSON<SessionList>('/api/sessions');
-    return data.sessions ?? [];
-}
-
-// listHistory 返回服务端持久化的会话历史(重启后仍可恢复)
-export async function listHistory(): Promise<HistoryInfo[]> {
-    const data = await fetchJSON<SessionList>('/api/sessions/history');
-    return (data.sessions as unknown as HistoryInfo[]) ?? [];
-}
-
-// createSession 新建会话;command 为空时服务端回退到默认命令($SHELL)
-export async function createSession(command = '', args: string[] = []): Promise<SessionInfo> {
+// createSession 新建会话;command 为空时服务端回退到默认命令($SHELL)。
+// id 为客户端生成的会话 id(16 位 base36):已存活 → 幂等返回现有会话;
+// 服务端有记录 → 复活(记录命令重建,run_count+1);无 id → 服务端生成。
+export async function createSession(
+    command = '',
+    args: string[] = [],
+    id?: string,
+): Promise<SessionInfo> {
+    const body: Record<string, unknown> = { command, args };
+    if (id) body.id = id;
     return fetchJSON<SessionInfo>('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, args }),
+        body: JSON.stringify(body),
     });
 }
 
-// renameSession 持久化会话显示名(活会话与历史均支持,存服务端)
+// checkSessions 批量查询清单中 id 的存活状态(2s 轮询):
+// 返回存活的会话,清单中未返回的 id 即服务端已无存活记录。
+export async function checkSessions(ids: string[]): Promise<SessionInfo[]> {
+    if (ids.length === 0) return [];
+    const data = await fetchJSON<{ sessions: Record<string, SessionInfo> }>(
+        '/api/sessions/status',
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+        },
+    );
+    return data.sessions ? Object.values(data.sessions) : [];
+}
+
+// renameSession 持久化会话显示名(存服务端记录,复活后仍保留)
 export async function renameSession(id: string, title: string): Promise<void> {
     await fetch(`/api/sessions/${id}/title`, {
         method: 'PUT',
