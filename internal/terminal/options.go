@@ -23,7 +23,10 @@ type Options struct {
 
 	// CloseTimeout is the time in seconds to force kill the process
 	// after the close signal has been sent. -1 disables the escalation.
-	CloseTimeout int `json:"close_timeout" flagName:"close-timeout" flagDescribe:"Time in seconds to force kill process after the session is closed" default:"-1"`
+	// Default 3: the close signal (SIGHUP) can be ignored by processes
+	// started under nohup / non-interactive shells (SIG_IGN inherited),
+	// so a bounded grace period with SIGKILL escalation is the safe default.
+	CloseTimeout int `json:"close_timeout" flagName:"close-timeout" flagDescribe:"Time in seconds to force kill process after the session is closed" default:"3"`
 
 	// Term is the value of the TERM environment variable.
 	// Empty means "xterm-256color".

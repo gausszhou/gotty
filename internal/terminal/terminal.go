@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,6 +53,12 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 
 	cmd := exec.Command(command, term.args...)
 	cmd.Env = buildEnv(command, term.env)
+	// 会话默认工作目录为用户 HOME,而不是 gotty 进程的启动目录
+	// (服务常驻后,进程 cwd 往往不是用户期望的 shell 起点)。
+	// UserHomeDir 失败时(如 $HOME 未设置)保持 inherits gotty cwd。
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		cmd.Dir = home
+	}
 	term.cmd = cmd
 
 	var ptmx *os.File
@@ -194,16 +201,23 @@ func (t *Terminal) Wait() error {
 	return t.waitErr
 }
 
-// Close asks the process to exit: it sends closeSignal, then escalates
-// to SIGKILL after closeTimeout. The PTY is closed once the process exits.
+// Close asks the process to exit. It sends the close signal (SIGHUP by
+// default) to the whole process group, then escalates to SIGKILL after
+// closeTimeout. The PTY is closed once the process exits.
 // Closing an already-exited terminal is a no-op.
+//
+// The process-group signal matters: the SIGHUP disposition (SIG_IGN)
+// is inherited from parents started under nohup / non-interactive
+// shells, so a plain per-process signal can be silently dropped and
+// cmd.Wait() would block forever. The bounded SIGKILL escalation is
+// therefore the safe default (see DefaultCloseTimeout).
 func (t *Terminal) Close() error {
 	if t.Exited() {
 		return nil
 	}
 
 	if t.cmd.Process != nil {
-		if err := t.cmd.Process.Signal(t.closeSignal); err != nil {
+		if err := t.signalGroup(t.closeSignal); err != nil {
 			return fmt.Errorf("failed to send signal %v: %w", t.closeSignal, err)
 		}
 	}
@@ -213,7 +227,8 @@ func (t *Terminal) Close() error {
 		case <-t.exited:
 			return nil
 		case <-time.After(t.closeTimeout):
-			if err := t.cmd.Process.Signal(syscall.SIGKILL); err != nil {
+			// 优雅信号未生效(SIGHUP 被忽略等):SIGKILL 升级到整个进程组
+			if err := t.signalGroup(syscall.SIGKILL); err != nil {
 				return fmt.Errorf("failed to send SIGKILL: %w", err)
 			}
 			<-t.exited
@@ -222,6 +237,21 @@ func (t *Terminal) Close() error {
 	}
 
 	<-t.exited
+	return nil
+}
+
+// signalGroup sends sig to the process group of the command. With the
+// PTY's Setsid the command is a session leader, so its pgid equals its
+// pid and -pid addresses the whole group (covering sh -c children).
+// A dead group (ESRCH) falls back to signaling the process itself.
+func (t *Terminal) signalGroup(sig syscall.Signal) error {
+	pid := t.cmd.Process.Pid
+	if err := syscall.Kill(-pid, sig); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return t.cmd.Process.Signal(sig)
+		}
+		return err
+	}
 	return nil
 }
 
