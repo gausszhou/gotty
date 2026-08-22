@@ -42,14 +42,12 @@ frontend:
 docs:
 	pnpm --filter gotty-docs build
 
-# Copy static assets + bundle into internal/api/static for go:embed
+# Copy vite build 产物(含 public/favicon.png)into internal/api/static for go:embed
 static: frontend
-	@mkdir -p internal/api/static/js internal/api/static/css
-	cp apps/web/static/index.html internal/api/static/index.html
-	cp apps/web/static/favicon.png internal/api/static/favicon.png
-	cp apps/web/static/css/index.css internal/api/static/css/index.css
-	cp apps/web/static/css/xterm_customize.css internal/api/static/css/xterm_customize.css
-	cp apps/web/dist/gotty-bundle.js internal/api/static/js/gotty-bundle.js
+	@mkdir -p internal/api/static
+	cp apps/web/dist/index.html internal/api/static/index.html
+	cp apps/web/dist/main.js internal/api/static/main.js
+	cp apps/web/dist/favicon.png internal/api/static/favicon.png
 
 test: vet fmt
 	go test ./...

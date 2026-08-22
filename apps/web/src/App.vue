@@ -1,138 +1,191 @@
 <template>
   <div class="app">
-    <!-- Activity Bar(仿 VSCode) -->
-    <div class="activity-bar">
-      <button class="icon-btn" title="新建会话" @click="createNew">＋</button>
-      <button class="icon-btn" title="左右拆分聚焦终端" :disabled="!focusId" @click="splitFocused('row')">⬌</button>
-      <button class="icon-btn" title="上下拆分聚焦终端" :disabled="!focusId" @click="splitFocused('column')">⬍</button>
-      <div class="spacer"></div>
-      <button class="icon-btn" title="关闭聚焦终端(会话保留)" :disabled="!focusId" @click="closeFocused">✕</button>
-    </div>
+    <!-- 顶部:会话页签栏 -->
+    <TabBar
+      :active-session-id="activeSession?.id"
+      :latency="activeSession ? latency : null"
+      :jitter="activeSession ? jitter : null"
+      @open="openSession"
+      @destroy="destroyFromTab"
+    />
 
-    <!-- 左侧:会话管理列表 -->
-    <div class="sidebar-wrap">
-      <SessionSidebar :active-session-id="activeSessionId" @open="openPane" @destroy="destroyFromSidebar" />
-    </div>
-
-    <!-- 右侧:分屏工作区 -->
-    <div class="workspace">
-      <SplitView
-        v-if="tree"
-        :node="tree"
-        :focused-id="focusId"
-        :session-of-pane="sessionOfPane"
-        @focus="focusId = $event"
-        @close="closePane"
-        @destroy="destroyPane"
+    <!-- 内容区:常驻视图(每会话一个,懒创建,v-show 显隐,连接保持) -->
+    <div class="content">
+      <TerminalPane
+        v-for="v in openedViews"
+        v-show="activeSession?.id === v.id"
+        :key="v.id"
+        :session-id="v.id"
+        :active="activeSession?.id === v.id"
+        @close="closeView(v.id)"
+        @latency="onLatency(v.id, $event)"
       />
-      <div v-else class="workspace-empty">
-        <div class="empty-title">没有打开的终端</div>
-        <div class="empty-hint">点击左侧 ＋ 新建会话,或从会话列表选择一个会话打开</div>
+      <div v-if="!openedViews.length" class="content-empty">
+        <div v-if="bootError" class="empty-error">{{ bootError }}</div>
+        <template v-else>
+          <div class="empty-title">没有打开的终端</div>
+          <div class="empty-hint">点击顶部 ＋ 新建会话,或从 ▾ 历史重新运行</div>
+        </template>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import SessionSidebar from './components/SessionSidebar.vue'
-import SplitView from './components/SplitView.vue'
-import { leaf, splitLeaf, removeLeaf, firstLeaf, type LayoutNode, type SplitDir } from './utils/split'
-import { createSession, getSession, destroySession, type SessionInfo } from './utils/api'
+import { ref, onMounted } from 'vue'
+import TabBar from './components/TabBar.vue'
+import TerminalPane from './components/TerminalPane.vue'
+import { createSession, destroySession, listSessions, type SessionInfo } from './utils/api'
+import { logger } from './utils/logger'
 
-// ── 布局树:叶子 = 终端 pane,内部节点 = 二分 split ──
-const tree = ref<LayoutNode | null>(null)
-const focusId = ref<string | null>(null)
+// 会话 id 保存在 sessionStorage:刷新页面恢复同一会话;
+// 不进入 URL,不在界面展示。
+const STORAGE_KEY = 'gotty.sessionId'
 
-// paneId -> sessionId 与反向索引
-const sessionOfPane = reactive<Record<string, string>>({})
-const paneOfSession = reactive<Record<string, string>>({})
-const paneSeq = ref(0)
+const activeSession = ref<SessionInfo | null>(null)
+// 当前会话的实测 RTT(毫秒)与抖动,展示在标题栏右侧(颜色分级)
+const latency = ref<number | null>(null)
+const jitter = ref<number | null>(null)
+const bootError = ref('')
 
-const activeSessionId = computed(() =>
-    focusId.value ? sessionOfPane[focusId.value] : undefined,
-)
+// RTT 采样历史(抖动 = 相邻采样差均值的绝对值)
+const rttSamples = ref<number[]>([])
+const JITTER_WINDOW = 8
 
-// 打开一个会话:已打开则聚焦;否则新建 pane 附着。
-// target 指定拆分方向与锚点(默认:左右拆分当前聚焦 pane)。
-function openPane(s: SessionInfo, target?: { dir: SplitDir; paneId: string }) {
-    const existing = paneOfSession[s.id]
-    if (existing) {
-        focusId.value = existing
+function pushSample(ms: number) {
+    rttSamples.value.push(ms)
+    if (rttSamples.value.length > JITTER_WINDOW) {
+        rttSamples.value.shift()
+    }
+    const samples = rttSamples.value
+    if (samples.length < 2) {
+        jitter.value = null
         return
     }
+    let sum = 0
+    for (let i = 1; i < samples.length; i++) {
+        sum += Math.abs(samples[i] - samples[i - 1])
+    }
+    jitter.value = Math.round(sum / (samples.length - 1))
+}
+
+function resetLatency() {
+    latency.value = null
+    jitter.value = null
+    rttSamples.value = []
+}
+
+// 常驻视图:打开过的会话各保留一个 TerminalPane(v-show 显隐,连接不断)
+const openedViews = ref<SessionInfo[]>([])
+const openedIds = new Set<string>()
+
+function openView(s: SessionInfo) {
+    if (openedIds.has(s.id)) return
+    openedIds.add(s.id)
+    openedViews.value.push(s)
+}
+
+function removeView(id: string) {
+    openedIds.delete(id)
+    openedViews.value = openedViews.value.filter((v) => v.id !== id)
+}
+
+function loadStoredId(): string | null {
+    try {
+        return sessionStorage.getItem(STORAGE_KEY)
+    } catch {
+        return null
+    }
+}
+
+function saveStoredId(id: string) {
+    try {
+        sessionStorage.setItem(STORAGE_KEY, id)
+    } catch {
+        // sessionStorage 不可用时静默降级
+    }
+}
+
+function clearStoredId() {
+    try {
+        sessionStorage.removeItem(STORAGE_KEY)
+    } catch {
+        // ignore
+    }
+}
+
+// 打开一个会话:懒创建常驻视图并激活(已打开的只切换)
+function openSession(detail: { session: SessionInfo; title: string }) {
+    const s = detail.session
     if (s.state === 'destroyed' || s.exited) return
+    logger.info('app', 'open session=%s title=%s', s.id, detail.title)
+    openView(s)
+    activeSession.value = s
+    resetLatency()
+    saveStoredId(s.id)
+}
 
-    const paneId = `p${paneSeq.value++}`
-    sessionOfPane[paneId] = s.id
-    paneOfSession[s.id] = paneId
-
-    if (!tree.value) {
-        tree.value = leaf(paneId)
-    } else {
-        const dir = target?.dir ?? 'row'
-        const anchor = target?.paneId ?? focusId.value ?? firstLeaf(tree.value).id
-        tree.value = splitLeaf(tree.value, anchor, dir, paneId)
+// 延迟/抖动只展示当前激活会话的实测值,其他视图的测量忽略
+function onLatency(viewId: string, ms: number | null) {
+    if (activeSession.value?.id !== viewId) return
+    if (ms === null) {
+        resetLatency()
+        return
     }
-    focusId.value = paneId
+    latency.value = ms
+    pushSample(ms)
 }
 
-// 新建会话并打开
-async function createNew() {
-    const s = await createSession('')
-    openPane(s)
-}
-
-// 拆分聚焦 pane:两个 pane 各附着一个会话,新 pane 用新会话
-async function splitFocused(dir: SplitDir) {
-    if (!focusId.value) return
-    const s = await createSession('')
-    openPane(s, { dir, paneId: focusId.value })
-}
-
-// 关闭 pane:仅分离(WS 断开),会话在服务端保留
-function closePane(paneId: string) {
-    const sid = sessionOfPane[paneId]
-    if (sid) delete paneOfSession[sid]
-    delete sessionOfPane[paneId]
-
-    if (tree.value) {
-        tree.value = removeLeaf(tree.value, paneId)
-    }
-    if (focusId.value === paneId) {
-        focusId.value = tree.value ? firstLeaf(tree.value).id : null
+// 关闭某视图(仅解除视图,会话在服务端保留)
+function closeView(id: string) {
+    logger.info('app', 'close view session=%s (session stays server-side)', id)
+    removeView(id)
+    if (activeSession.value?.id === id) {
+        activeSession.value = null
+        resetLatency()
+        clearStoredId()
     }
 }
 
-// 销毁会话并关闭其 pane
-async function destroyPane(paneId: string) {
-    const sid = sessionOfPane[paneId]
-    if (sid) await destroySession(sid)
-    closePane(paneId)
+// 页签销毁(服务端已删,历史保留):同步移除常驻视图
+function destroyFromTab(s: SessionInfo) {
+    closeView(s.id)
 }
 
-function closeFocused() {
-    if (focusId.value) closePane(focusId.value)
+// 会话N 编号(按 created_at 升序),重命名/服务端标题优先
+function autoTitle(s: SessionInfo, list: SessionInfo[]): string {
+    if (s.title) return s.title
+    const asc = [...list].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
+    const idx = asc.findIndex((x) => x.id === s.id)
+    return idx >= 0 ? `会话${idx + 1}` : s.command
 }
 
-// 侧边栏销毁:关掉绑定该会话的 pane(会话已在侧边栏内销毁)
-function destroyFromSidebar(s: SessionInfo) {
-    const paneId = paneOfSession[s.id]
-    if (paneId) closePane(paneId)
-}
-
-// 启动:URL ?id= 兼容 —— 存活则打开,否则等待用户操作
+// 启动:优先恢复 sessionStorage 中的会话;否则打开最近的活会话;
+// 都没有则自动创建默认会话。
 onMounted(async () => {
-    const urlId = new URLSearchParams(window.location.search).get('id')
-    if (!urlId) return
-    const s = await getSession(urlId)
-    if (s && s.state !== 'destroyed' && !s.exited) {
-        openPane(s)
-    } else {
-        // 清理失效的 ?id=
-        const url = new URL(window.location.href)
-        url.searchParams.delete('id')
-        window.history.replaceState(null, '', url)
+    try {
+        let list: SessionInfo[] = []
+        try {
+            list = await listSessions()
+        } catch {
+            // 列表不可用时继续尝试创建
+        }
+        logger.info('app', 'boot: sessions=%d stored=%s', list.length, loadStoredId() ?? 'none')
+
+        const stored = loadStoredId()
+        let s: SessionInfo | null =
+            (stored && list.find((x) => x.id === stored)) || null
+        if (!s && list.length > 0) {
+            s = [...list].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0]
+        }
+        if (!s) {
+            s = await createSession('')
+            openSession({ session: s, title: `会话${list.length + 1}` })
+            return
+        }
+        openSession({ session: s, title: autoTitle(s, list) })
+    } catch (err) {
+        bootError.value = err instanceof Error ? err.message : String(err)
     }
 })
 </script>
@@ -161,66 +214,22 @@ body {
 <style scoped>
 .app {
     display: flex;
+    flex-direction: column;
     height: 100vh;
     width: 100vw;
     background: #1e1e1e;
     overflow: hidden;
 }
 
-.activity-bar {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    width: 48px;
-    padding: 10px 0;
-    flex: 0 0 auto;
-    background: #333333; /* VSCode activity bar */
-    border-right: 1px solid #1e1e1e;
-}
-
-.icon-btn {
-    background: none;
-    border: none;
-    color: #cccccc;
-    font-size: 18px;
-    width: 40px;
-    height: 40px;
-    cursor: pointer;
-    border-radius: 4px;
-    line-height: 1;
-}
-
-.icon-btn:hover:not(:disabled) {
-    background: #3a3d41;
-    color: #ffffff;
-}
-
-.icon-btn:disabled {
-    opacity: 0.35;
-    cursor: default;
-}
-
-.spacer {
+.content {
     flex: 1 1 auto;
-}
-
-.sidebar-wrap {
-    width: 240px;
-    flex: 0 0 auto;
-    border-right: 1px solid #1e1e1e;
-    background: #252526;
-}
-
-.workspace {
-    flex: 1 1 auto;
-    min-width: 0;
+    min-height: 0;
     display: flex;
     background: #1e1e1e;
-    padding: 0;
+    padding: 0; /* 内容区无修饰,纯 xterm */
 }
 
-.workspace-empty {
+.content-empty {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -237,5 +246,14 @@ body {
 
 .empty-hint {
     font-size: 13px;
+}
+
+.empty-error {
+    max-width: 320px;
+    padding: 10px 16px;
+    color: #f48771;
+    font-size: 13px;
+    text-align: center;
+    line-height: 1.6;
 }
 </style>

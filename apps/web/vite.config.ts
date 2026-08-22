@@ -9,8 +9,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        entryFileNames: 'gotty-bundle.js',
-        chunkFileNames: 'gotty-bundle.js',
+        entryFileNames: 'main.js',
+        chunkFileNames: 'main.js',
       },
     },
   },
