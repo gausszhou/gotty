@@ -1,63 +1,59 @@
 <template>
-  <div class="terminal-pane" :class="{ focused }" @mousedown="focus">
-    <div class="pane-header">
-      <span class="pane-title" :title="title">{{ title }}</span>
-      <span class="pane-session">{{ shortSessionId }}</span>
-      <span v-if="connecting" class="pane-status">connecting…</span>
-      <button class="pane-btn" title="关闭此终端(会话保留)" @mousedown.stop @click.stop="close">✕</button>
-      <button class="pane-btn" title="销毁会话并关闭" @mousedown.stop @click.stop="destroy">🗑</button>
+  <div class="terminal-pane">
+    <!-- 纯净的 xterm:无头部、无边框、无任何修饰 -->
+    <Terminal ref="terminalRef" class="pane-terminal" />
+
+    <!-- 断开 / 会话消失:VSCode 风格弹窗(异常态提示,正常态不出现) -->
+    <div
+      v-if="connState === 'disconnected' || connState === 'gone'"
+      class="pane-overlay"
+      @mousedown.stop
+      @contextmenu.prevent.stop
+    >
+      <div class="vsc-dialog">
+        <div class="dialog-title">{{ connState === 'gone' ? '会话已销毁' : '连接已断开' }}</div>
+        <div class="dialog-message">{{ overlayMessage }}</div>
+        <div class="dialog-actions">
+          <button
+            v-if="connState === 'disconnected'"
+            class="btn-primary"
+            @click="reconnect"
+          >重新连接</button>
+          <button class="btn-secondary" @click="close">关闭</button>
+        </div>
+      </div>
     </div>
-    <Terminal ref="terminalRef" class="pane-terminal" @title="onServerTitle" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import Terminal from './Terminal.vue'
-import { WebTTY, protocols, type Terminal as ITerminal } from '../utils/webtty'
-import { ConnectionFactory } from '../utils/websocket'
+import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
 import { getSession } from '../utils/api'
+import { logger } from '../utils/logger'
 
 const props = defineProps<{
-    paneId: string
     sessionId: string
-    command?: string
-    focused?: boolean
+    // v-show 常驻视图:是否当前可见(可见时重新 fit 终端)
+    active?: boolean
 }>()
 
 const emit = defineEmits<{
-    (e: 'focus', paneId: string): void
-    (e: 'close', paneId: string): void
-    (e: 'destroy', paneId: string): void
+    (e: 'close'): void
+    // 实测 RTT(毫秒),由上层展示在页签标题旁
+    (e: 'latency', ms: number | null): void
 }>()
 
+type ConnState = 'connecting' | 'connected' | 'disconnected' | 'gone'
+
 const terminalRef = ref<InstanceType<typeof Terminal>>()
-const title = ref(props.command || props.sessionId)
-const connecting = ref(true)
+const connState = ref<ConnState>('connecting')
+const overlayMessage = ref('')
 
-let closer: (() => void) | null = null
+let wsWrapper: WSWrapper | null = null
 
-const shortSessionId = () => props.sessionId.slice(0, 8)
-
-function onServerTitle(t: string) {
-    if (t) title.value = t
-}
-
-function focus() {
-    emit('focus', props.paneId)
-}
-
-function close() {
-    closer?.()
-    emit('close', props.paneId)
-}
-
-async function destroy() {
-    emit('destroy', props.paneId)
-}
-
-// resolveSession 只负责确认绑定会话仍然存活;会话销毁后返回 null,
-// WebTTY 会停止重连(会话生命周期由左侧列表管理,不在 pane 内自建)。
+// resolveSession 确认绑定会话仍然存活;销毁后返回 null。
 const resolveSession = async (): Promise<string | null> => {
     const session = await getSession(props.sessionId)
     if (session && session.state !== 'destroyed' && !session.exited) {
@@ -66,121 +62,178 @@ const resolveSession = async (): Promise<string | null> => {
     return null
 }
 
-onMounted(async () => {
-    const el = terminalRef.value!
-    if (!el) return
+// xterm 组件暴露的能力,直接映射给收发层
+const termHandle: TermHandle = {
+    info: () => terminalRef.value!.info(),
+    write: (data) => terminalRef.value!.write(data),
+    setWindowTitle: () => {},
+    reset: () => terminalRef.value!.reset(),
+    deactivate: () => terminalRef.value!.deactivate(),
+    onInput: (cb) => terminalRef.value!.onInput(cb),
+    onResize: (cb) => terminalRef.value!.onResize(cb),
+}
 
-    const termAdapter: ITerminal = {
-        info: () => el.info(),
-        output: (data: Uint8Array) => el.write(data),
-        showMessage: (msg: string, timeout: number) => el.showMessage(msg, timeout),
-        removeMessage: () => el.removeMessage(),
-        setWindowTitle: (t: string) => el.setWindowTitle(t),
-        setPreferences: () => {},
-        onInput: (cb) => el.onInput(cb),
-        onResize: (cb) => el.onResize(cb),
-        reset: () => el.reset(),
-        deactivate: () => el.deactivate(),
-        close: () => el.close(),
+function attach() {
+    connState.value = 'connecting'
+    overlayMessage.value = ''
+    logger.info('attach', 'attach session=%s', props.sessionId)
+
+    void (async () => {
+        const sid = await resolveSession()
+        if (sid === null) {
+            logger.warn('attach', 'session gone (session=%s)', props.sessionId)
+            connState.value = 'gone'
+            overlayMessage.value = '该会话已被销毁或不存在'
+            emit('latency', null)
+            return
+        }
+        logger.info('attach', 'session resolved ok (session=%s)', sid)
+
+        wsWrapper = openTerminalWS(termHandle, sid, {
+            onConnect: () => {
+                logger.info('attach', 'connected (session=%s)', props.sessionId)
+                connState.value = 'connected'
+            },
+            onDisconnect: (message) => {
+                logger.warn('attach', 'disconnected (session=%s): %s', props.sessionId, message)
+                connState.value = 'disconnected'
+                overlayMessage.value = message
+                emit('latency', null)
+            },
+            onGone: () => {
+                logger.warn('attach', 'gone (session=%s)', props.sessionId)
+                connState.value = 'gone'
+                overlayMessage.value = '该会话已被销毁或不存在'
+                emit('latency', null)
+            },
+            onLatency: (ms) => emit('latency', ms),
+            resolveSession,
+        })
+    })()
+}
+
+function reconnect() {
+    connState.value = 'connecting'
+    overlayMessage.value = ''
+    if (wsWrapper) {
+        wsWrapper.reconnect()
+    } else {
+        attach()
     }
+}
 
-    const sid = await resolveSession()
-    if (sid === null) {
-        connecting.value = false
-        el.showMessage('Session is gone', 0)
-        return
-    }
+function close() {
+    wsWrapper?.close()
+    emit('close')
+}
 
-    const httpsEnabled = window.location.protocol === 'https:'
-    const wsBase =
-        (httpsEnabled ? 'wss://' : 'ws://') +
-        window.location.host +
-        '/ws'
-    const token = (window as any).gotty_auth_token || ''
-    const wt = new WebTTY(
-        termAdapter,
-        new ConnectionFactory(wsBase, protocols),
-        '', // Arguments (unused by the new session-based API)
-        token,
-        sid,
-        resolveSession,
-    )
-    closer = wt.open()
-    connecting.value = false
-})
+onMounted(attach)
+
+// v-show 从隐藏切回可见时,容器尺寸恢复,重新 fit 终端
+watch(
+    () => props.active,
+    (visible) => {
+        if (visible) {
+            requestAnimationFrame(() => terminalRef.value?.fit())
+        }
+    },
+)
 
 onBeforeUnmount(() => {
-    closer?.()
+    logger.info('attach', 'detach/unmount (session=%s)', props.sessionId)
+    wsWrapper?.close()
+    emit('latency', null)
 })
 </script>
 
 <style scoped>
 .terminal-pane {
-    display: flex;
-    flex-direction: column;
+    position: relative;
+    flex: 1 1 0%;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: #0d1117;
-    border: 1px solid #30363d;
-    box-sizing: border-box;
-}
-
-.terminal-pane.focused {
-    border-color: #2f81f7;
-}
-
-.pane-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 26px;
-    padding: 0 6px;
-    flex: 0 0 auto;
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
-    color: #c9d1d9;
-    font-size: 12px;
-    user-select: none;
-}
-
-.pane-title {
-    flex: 1 1 auto;
+    background: #000000;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.pane-session {
-    color: #8b949e;
-    font-family: monospace;
-    flex: 0 0 auto;
-}
-
-.pane-status {
-    color: #d29922;
-    flex: 0 0 auto;
-}
-
-.pane-btn {
-    background: none;
-    border: none;
-    color: #8b949e;
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 4px;
-    line-height: 18px;
-}
-
-.pane-btn:hover {
-    color: #f0f6fc;
-    background: #30363d;
-    border-radius: 3px;
 }
 
 .pane-terminal {
-    flex: 1 1 auto;
-    min-height: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── 断开弹窗(仿 VSCode 模态框,仅异常态) ── */
+.pane-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 10;
+}
+
+.vsc-dialog {
+    min-width: 320px;
+    max-width: 420px;
+    padding: 16px;
+    background: #252526; /* VSCode 对话框背景 */
+    border: 1px solid #454545;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.dialog-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.dialog-message {
+    font-size: 13px;
+    color: #cccccc;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.btn-primary {
+    height: 26px;
+    padding: 0 14px;
+    background: #0e639c; /* VSCode 主按钮 */
+    border: none;
+    border-radius: 3px;
+    color: #ffffff;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.btn-primary:hover {
+    background: #1177bb;
+}
+
+.btn-secondary {
+    height: 26px;
+    padding: 0 14px;
+    background: #3a3d41; /* VSCode 次按钮 */
+    border: none;
+    border-radius: 3px;
+    color: #cccccc;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.btn-secondary:hover {
+    background: #45494e;
 }
 </style>

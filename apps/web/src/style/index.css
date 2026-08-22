@@ -1,0 +1,45 @@
+/* GoTTY 全局样式(唯一 CSS 入口,构建时内联进 main.js) */
+
+/* 页面基础:黑底,锁定滚动,无内边距 */
+html, body {
+    background: black;
+    height: 100%;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+/* xterm 字体族(自定义) */
+.terminal {
+    font-family: "DejaVu Sans Mono", "Everson Mono", FreeMono, Menlo, Terminal, monospace, "Apple Symbols";
+}
+/* ── 终端滚动条:细滚动条 + 深色主题 ── */
+.xterm-viewport {
+    background-color: #000000;
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: #4d4d4d #1e1e1e;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+    background: #4d4d4d;
+    border-radius: 4px;
+    border: 2px solid #1e1e1e;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: #6e6e6e;
+}
+
+.xterm-viewport::-webkit-scrollbar-corner {
+    background: #1e1e1e;
+}

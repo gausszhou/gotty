@@ -6,8 +6,8 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 
 const emit = defineEmits<{
@@ -20,8 +20,6 @@ const terminalEl = ref<HTMLElement>()
 let term: XTerminal
 let fitAddon: FitAddon
 let resizeHandler: () => void
-let messageEl: HTMLElement
-let messageTimer: ReturnType<typeof setTimeout>
 
 onMounted(() => {
   term = new XTerminal({
@@ -36,22 +34,18 @@ onMounted(() => {
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
 
+  // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时
+  // loadAddon 会抛错,自动回退到 xterm 内置的 DOM 渲染器。
   try {
-    const webglAddon = new WebglAddon()
-    webglAddon.onContextLoss(() => webglAddon.dispose())
-    term.loadAddon(webglAddon)
+    term.loadAddon(new WebglAddon())
   } catch {
-    console.warn('WebGL renderer not available, falling back to canvas')
+    // 回退 DOM 渲染器即可,无需处理
   }
-
-  messageEl = document.createElement('div')
-  messageEl.className = 'xterm-overlay'
 
   term.open(terminalEl.value!)
 
   resizeHandler = () => {
     fitAddon.fit()
-    showMessage(String(term.cols) + 'x' + String(term.rows), 2000)
   }
 
   requestAnimationFrame(() => {
@@ -65,32 +59,18 @@ onBeforeUnmount(() => {
   term?.dispose()
 })
 
+// fit 重新适配容器尺寸;v-show 隐藏后重新显示时必须调用
+// (隐藏时容器尺寸为 0,fit 结果无效)
+function fit() {
+  fitAddon?.fit()
+}
+
 function info() {
   return { columns: term.cols, rows: term.rows }
 }
 
 function write(data: Uint8Array) {
   term?.write(data)
-}
-
-function showMessage(message: string, timeout: number) {
-  if (!terminalEl.value || !messageEl) return
-  messageEl.textContent = message
-  terminalEl.value.appendChild(messageEl)
-  if (messageTimer) clearTimeout(messageTimer)
-  if (timeout > 0) {
-    messageTimer = setTimeout(() => {
-      if (messageEl.parentNode === terminalEl.value) {
-        terminalEl.value.removeChild(messageEl)
-      }
-    }, timeout)
-  }
-}
-
-function removeMessage() {
-  if (messageEl?.parentNode === terminalEl.value) {
-    terminalEl.value!.removeChild(messageEl)
-  }
 }
 
 function setWindowTitle(title: string) {
@@ -110,7 +90,6 @@ function onResize(callback: (columns: number, rows: number) => void) {
 }
 
 function reset() {
-  removeMessage()
   term?.clear()
 }
 
@@ -125,14 +104,13 @@ function close() {
 defineExpose({
   info,
   write,
-  showMessage,
-  removeMessage,
   setWindowTitle,
   setPreferences,
   onInput,
   onResize,
   reset,
   deactivate,
+  fit,
   close,
 })
 </script>
@@ -142,5 +120,8 @@ defineExpose({
     width: 100%;
     height: 100%;
     background: black;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
 }
 </style>
