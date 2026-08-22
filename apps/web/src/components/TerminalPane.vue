@@ -1,7 +1,7 @@
 <template>
   <div class="terminal-pane">
     <!-- 纯净的 xterm:无头部、无边框、无任何修饰 -->
-    <Terminal ref="terminalRef" class="pane-terminal" />
+    <Terminal ref="terminalRef" class="pane-terminal" @title="onProgramTitle" />
 
     <!-- 断开 / 会话消失:VSCode 风格弹窗(异常态提示,正常态不出现) -->
     <div
@@ -47,7 +47,14 @@ const emit = defineEmits<{
     (e: 'latency', ms: number | null): void
     // WS 连接状态(connected = 本设备已成功附着),圆点即时变绿
     (e: 'conn', connected: boolean): void
+    // 程序设置的终端标题(OSC 0/2),由上层更新页签标题
+    (e: 'tab-title', title: string): void
 }>()
+
+// onProgramTitle:程序标题 → 上层(App 写入清单,页签随之更新)
+function onProgramTitle(title: string) {
+    emit('tab-title', title)
+}
 
 type ConnState = 'connecting' | 'connected' | 'disconnected' | 'gone'
 

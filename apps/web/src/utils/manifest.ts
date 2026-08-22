@@ -7,7 +7,7 @@ export const MANIFEST_KEY = 'gotty.sessions'
 
 export interface ManifestEntry {
     id: string
-    title?: string // 显示名(可空,回退自动编号)
+    title?: string // 程序设置的标题(OSC 0/2);可空,页签回退到命令名
     command: string
     args: string[]
     createdAt: number // unix 毫秒

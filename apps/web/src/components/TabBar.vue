@@ -9,23 +9,10 @@
       :key="item.session.id"
       class="tab"
       :class="{ active: item.session.id === activeSessionId }"
-      :title="'双击重命名'"
       @click="open(item)"
-      @dblclick="startRename(item)"
     >
       <span class="state-dot" :class="stateClass(item.session)"></span>
-      <input
-        v-if="renamingId === item.session.id"
-        :ref="setRenameInputRef"
-        v-model="renameDraft"
-        class="rename-input"
-        spellcheck="false"
-        @click.stop
-        @keyup.enter="commitRename"
-        @keyup.esc="cancelRename"
-        @blur="commitRename"
-      />
-      <span v-else class="tab-title">{{ item.title }}</span>
+      <span class="tab-title">{{ item.title }}</span>
       <button class="tab-close" title="销毁会话" @click.stop="destroy(item.session)">✕</button>
     </div>
 
@@ -49,12 +36,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
-import { destroySession, renameSession, type SessionInfo } from '../utils/api'
-import {
-    upsertManifest, removeFromManifest,
-    type ManifestEntry,
-} from '../utils/manifest'
+import { computed } from 'vue'
+import { destroySession, type SessionInfo } from '../utils/api'
+import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
@@ -99,24 +83,28 @@ function toggle() {
     emit('theme')
 }
 
-const renamingId = ref<string | null>(null)
-const renameDraft = ref('')
-// 函数 ref:v-for 内的字符串 ref 会被收集成数组导致 .focus() 失效,
-// 函数 ref 每次只收到单个元素(卸载时为 null)。
-const renameInputRef = ref<HTMLInputElement | null>(null)
-function setRenameInputRef(el: unknown) {
-    renameInputRef.value = el as HTMLInputElement | null
-}
-
 const entryById = computed(() => new Map(props.entries.map((e) => [e.id, e])))
 
-// 页签 = 清单中存活的会话,按服务端 created_at 升序编号(会话N)
+// commandBasename 取命令名作为默认标题(如 /bin/bash → "bash")。
+function commandBasename(command: string): string {
+    const base = command.split('/').pop() || ''
+    return base || command
+}
+
+// 页签标题 = 程序最近设置的标题(OSC 0/2,Gnome-Shell 风格自动命名);
+// 无程序标题时回退命令名。旧版遗留的 "会话N" 编号视为无标题。
+function displayTitle(entry: ManifestEntry | undefined, command: string): string {
+    const t = entry?.title
+    if (t && !/^会话\d+$/.test(t)) return t
+    return commandBasename(command)
+}
+
+// 页签 = 清单中存活的会话,按服务端 created_at 升序
 const displayList = computed(() => {
     const alive = [...props.alive].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
     return alive.map((session) => {
         const entry = entryById.value.get(session.id)
-        const title = entry?.title || session.title || `会话${alive.indexOf(session) + 1}`
-        return { session, title }
+        return { session, title: displayTitle(entry, session.command) }
     })
 })
 
@@ -138,38 +126,6 @@ async function destroy(s: SessionInfo) {
     removeFromManifest(s.id)
     emit('destroy', s)
     emit('changed')
-}
-
-// ── 双击重命名(清单 + 服务端记录双写) ──
-function startRename(item: { session: SessionInfo; title: string }) {
-    renamingId.value = item.session.id
-    renameDraft.value = item.title
-    // 聚焦并全选(类似 VSCode 重命名):直接输入即覆盖原标题
-    nextTick(() => {
-        renameInputRef.value?.focus()
-        renameInputRef.value?.select()
-    })
-}
-
-async function commitRename() {
-    if (renamingId.value === null) return
-    const id = renamingId.value
-    const title = renameDraft.value.trim()
-    renamingId.value = null
-
-    const entry = entryById.value.get(id)
-    if (entry) {
-        upsertManifest({ ...entry, title: title || undefined })
-    }
-    try {
-        await renameSession(id, title)
-    } catch {
-        // 服务端保存失败时清单仍保留本次重命名
-    }
-}
-
-function cancelRename() {
-    renamingId.value = null
 }
 
 function stateClass(s: SessionInfo): string {
@@ -231,7 +187,7 @@ function stateClass(s: SessionInfo): string {
     align-items: center;
     gap: 2px;
     font-family: 'SF Mono', Consolas, monospace;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 8px;
     border-radius: 3px;
     white-space: nowrap;
@@ -279,31 +235,12 @@ function stateClass(s: SessionInfo): string {
     border-radius: 3px;
     cursor: pointer;
     flex: 0 0 auto;
-}
-
-.tab:hover .tab-close {
-    visibility: visible;
-}
-
-.tab-close {
-    visibility: hidden;
+    /* 常驻显示:不依赖 hover(原先是 visibility: hidden + .tab:hover 才可见) */
 }
 
 .tab-close:hover {
     background: var(--bg-tab-hover);
     color: var(--fg-bright);
-}
-
-.rename-input {
-    flex: 1 1 auto;
-    height: 20px;
-    padding: 0 4px;
-    background: var(--bg-input);
-    border: 1px solid var(--accent);
-    color: var(--fg);
-    font-size: 13px;
-    outline: none;
-    min-width: 0;
 }
 
 .tab-actions {

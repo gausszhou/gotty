@@ -1,6 +1,6 @@
 // 与 GoTTY REST API 通信的薄封装。
 // 会话列表由客户端 localStorage 清单(utils/manifest.ts)驱动,
-// 服务端只提供:创建(幂等/复活)、详情、状态批量查询、销毁、重命名。
+// 服务端只提供:创建(幂等/复活)、详情、状态批量查询、销毁。
 import { logger } from './logger'
 import type { Theme } from './theme'
 
@@ -11,7 +11,7 @@ export interface SessionInfo {
     args: string[];
     pid: number;
     exited: boolean;
-    title?: string; // 显示名(空 = 自动编号)
+    title?: string; // 显示名(可空;页签标题由程序 OSC 0/2 自动命名)
     created_at: string;
 }
 
@@ -81,15 +81,7 @@ export async function checkSessions(ids: string[]): Promise<SessionInfo[]> {
     return data.sessions ? Object.values(data.sessions) : [];
 }
 
-// renameSession 持久化会话显示名(存服务端记录,复活后仍保留)
-export async function renameSession(id: string, title: string): Promise<void> {
-    await fetch(`/api/sessions/${id}/title`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title }),
-    });
-}
-
+// getSession 获取单个会话详情。
 export async function getSession(id: string): Promise<SessionInfo | null> {
     try {
         return await fetchJSON<SessionInfo>(`/api/sessions/${id}`);

@@ -78,6 +78,11 @@ onMounted(() => {
   // 复制/粘贴快捷键(Ctrl+Shift+C/V、Ctrl+C 选区复制、Ctrl+V 粘贴)
   useXTermClipboard(term)
 
+  // 程序设置的终端标题(OSC 0/2,如 vim 的 "vim - file"):
+  // xterm 解析后经 onTitleChange 上报,上层据此更新页签标题
+  // (GNOME-Shell 风格:标题由程序自动命名/更新)。
+  term.onTitleChange((title) => emit('title', title))
+
   // xterm.css 的 .terminal 规则自带默认等宽字体;显式覆盖到元素上,
   // 保证 WebGL 与 DOM 两种渲染路径都使用配置的字体栈。
   ;(term.element as HTMLElement).style.fontFamily = FONT_FAMILY

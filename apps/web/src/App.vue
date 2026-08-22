@@ -26,6 +26,7 @@
         @close="closeView(v.id)"
         @latency="onLatency(v.id, $event)"
         @conn="onConn(v.id, $event)"
+        @tab-title="(t) => onTabTitle(v.id, t)"
       />
       <div v-if="!openedViews.length" class="content-empty">
         <div v-if="bootError" class="empty-error">{{ bootError }}</div>
@@ -52,7 +53,7 @@ import TerminalPane from './components/TerminalPane.vue'
 import { createSession, checkSessions, type SessionInfo } from './utils/api'
 import { currentTheme, toggleTheme, type Theme } from './utils/theme'
 import {
-    loadManifest, upsertManifest, touchManifest, removeFromManifest, generateSessionID,
+    loadManifest, upsertManifest, touchManifest, removeFromManifest, generateSessionID, findManifestEntry,
     type ManifestEntry,
 } from './utils/manifest'
 import { logger } from './utils/logger'
@@ -89,6 +90,17 @@ function onConn(viewId: string, isConnected: boolean) {
     connected.value = { ...connected.value, [viewId]: isConnected }
 }
 
+// onTabTitle:程序设置的标题(OSC 0/2)写入清单,页签随 entries 响应式更新;
+// 标题归属"自动命名/程序更新"(GNOME-Shell 风格),不再支持手动重命名。
+function onTabTitle(sessionId: string, title: string) {
+    if (!title) return
+    const entry = findManifestEntry(sessionId)
+    if (entry) {
+        upsertManifest({ ...entry, title })
+        entries.value = loadManifest()
+    }
+}
+
 // createNewSession:生成客户端 id → 创建(幂等/复活语义)→ 写清单 → 打开。
 // 顶部 ＋ 按钮与空态卡片共用此入口(统一创建逻辑)。
 async function createNewSession() {
@@ -102,8 +114,7 @@ async function createNewSession() {
         createdAt: Date.now(),
         lastSeen: Date.now(),
     })
-    const title = `会话${openedViews.value.length + 1}`
-    openSession({ session: s, title })
+    openSession({ session: s, title: '' })
     await refreshStatus()
 }
 

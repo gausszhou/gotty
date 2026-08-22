@@ -209,7 +209,7 @@ const (
   POST   /api/sessions              创建会话(客户端 id → 幂等/复活;无 id 服务端生成)
   POST   /api/sessions/status       批量查询清单 id 的存活状态 {"ids": [...]}
   GET    /api/sessions/:id          查看会话详情
-  PUT    /api/sessions/:id/title    重命名会话(持久化到记录)
+  PUT    /api/sessions/:id/title    设置显示名(前端已不提供重命名入口;保留兼容)
   DELETE /api/sessions/:id          销毁会话
 
 会话控制
