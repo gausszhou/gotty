@@ -293,10 +293,10 @@ function stateClass(s: SessionInfo): string {
     gap: 3px;
     background: none;
     border: none;
-    font-size: 12px;
+    font-size: 14px;
     font-family: inherit;
     cursor: pointer;
-    padding: 2px 6px;
+    padding: 2px 8px;
     line-height: 1;
     border-radius: 3px;
     color: var(--fg-dim);
@@ -307,7 +307,7 @@ function stateClass(s: SessionInfo): string {
 }
 
 .lang-item.active {
-    color: var(--accent);
+    color: #ccc;
     font-weight: 600;
 }
 

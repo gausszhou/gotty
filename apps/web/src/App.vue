@@ -325,6 +325,8 @@ body {
     align-items: center;
     gap: 6px;
     padding: 28px 44px;
+    /* 中英文宽度一致:以较宽的英文文案定宽(实测 en 247.6px),避免切换语言时卡片跳动 */
+    min-width: 248px;
     background: var(--bg-dialog);
     border: 1px dashed var(--border-tab);
     border-radius: 8px;
@@ -335,7 +337,7 @@ body {
 }
 
 .empty-card:hover {
-    border-color: var(--accent);
+    border-color: #ccc;
     background: var(--bg-tab-hover);
 }
 
@@ -346,16 +348,19 @@ body {
 }
 
 .empty-card:hover .empty-card-icon {
-    color: var(--accent);
+    color: #ccc;
 }
 
 .empty-card-title {
     font-size: 15px;
+    /* 固定行高:中文字体的默认行高(normal)大于拉丁字体,不加会导致两种语言卡片高度不一致 */
+    line-height: 1.4;
     color: var(--fg-bright);
 }
 
 .empty-card-hint {
     font-size: 12px;
+    line-height: 1.4;
     color: var(--fg-muted);
 }
 
