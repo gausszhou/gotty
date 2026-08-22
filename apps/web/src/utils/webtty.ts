@@ -55,9 +55,10 @@ export interface ConnectionFactory {
     create(sessionId: string): Connection;
 }
 
-// SessionResolver returns the id of a living session, creating a new one
-// when the previously used session is gone (e.g. destroyed by idle timeout).
-export type SessionResolver = () => Promise<string>;
+// SessionResolver returns the id of a living session to reconnect to.
+// It returns null when the session is gone for good (e.g. destroyed),
+// in which case the connection stays closed.
+export type SessionResolver = () => Promise<string | null>;
 
 export class WebTTY {
     term: Terminal;
@@ -159,6 +160,10 @@ export class WebTTY {
                         reconnectTimeout = setTimeout(async () => {
                             try {
                                 const id = await this.resolveSession();
+                                if (id === null) {
+                                    this.term.showMessage("Session is gone", 0);
+                                    return;
+                                }
                                 this.term.reset();
                                 connect(id);
                             } catch (err) {

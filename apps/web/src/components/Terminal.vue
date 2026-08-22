@@ -10,6 +10,12 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
+const emit = defineEmits<{
+    // 服务端 SetWindowTitle 帧;不再直接写 document.title,
+    // 由上层(pane 头部)决定如何展示。
+    (e: 'title', title: string): void
+}>()
+
 const terminalEl = ref<HTMLElement>()
 let term: XTerminal
 let fitAddon: FitAddon
@@ -88,7 +94,7 @@ function removeMessage() {
 }
 
 function setWindowTitle(title: string) {
-  document.title = title
+  emit('title', title)
 }
 
 function setPreferences(_value: object) {
@@ -133,8 +139,8 @@ defineExpose({
 
 <style scoped>
 .terminal-container {
-  width: 100%;
-  height: 100vh;
-  background: black;
+    width: 100%;
+    height: 100%;
+    background: black;
 }
 </style>

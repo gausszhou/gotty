@@ -27,25 +27,52 @@ apps/web
 │   └── css/
 └── src
     ├── main.ts       # 入口
-    ├── App.vue       # 会话驱动流程：创建/重连会话 + WebTTY 连接
+    ├── App.vue       # VSCode 式壳：Activity Bar + 会话边栏 + 分屏工作区
     ├── components
-    │   └── Terminal.vue   # xterm.js 终端组件
+    │   ├── SessionSidebar.vue  # 左侧会话列表（新建/销毁/状态轮询）
+    │   ├── SplitView.vue       # 递归分屏树（左右/上下二分 + 拖分隔条）
+    │   ├── TerminalPane.vue    # 单个会话查看器（附着/重连/关闭）
+    │   └── Terminal.vue        # xterm.js 终端组件
     └── utils
         ├── webtty.ts      # WebTTY 协议编解码 + 断线重连
-        └── websocket.ts   # WebSocket 连接管理
+        ├── websocket.ts   # WebSocket 连接管理
+        ├── api.ts         # REST API 封装（会话 CRUD）
+        └── split.ts       # 分屏树纯函数（拆分/删除/遍历）
 ```
+
+## 多终端会话
+
+页面采用 VSCode 式三段布局，支持**单页面多终端会话**：
+
+```text
+┌─ Activity Bar ─┬─ 会话列表 ─┬─ 分屏工作区 ─┐
+│ ＋ 新建        │ ● bash     │ ┌────────┬─┐ │
+│ ⬌ 左右拆分    │ ○ top      │ │ pane A │ │ │
+│ ⬍ 上下拆分    │ ● vim      │ ├────────┤ │ │
+│ ✕ 关闭        │            │ │ pane B │ │ │
+└───────────────┴────────────┴─────────┴─┴─┘
+```
+
+- **会话生命周期归左侧列表管理**：列表每 2 秒轮询 `GET /api/sessions`，
+  显示状态徽标（灰=idle、绿=running、红=exited）；「＋」新建会话（空
+  command 使用服务端默认命令）；hover 项上的 🗑 销毁会话。
+- **分屏工作区是查看器**：`SplitView` 是递归二分树（`utils/split.ts`），
+  叶子 `TerminalPane` 附着到绑定会话（`WS /ws?session_id=`）。点击列表
+  中的会话：已打开则聚焦对应 pane，否则新建 pane 附着。
+- **关闭 pane 只分离、不杀进程**（PTY 在服务端继续运行）；点 Activity
+  Bar 的 ⬌/⬍ 拆分当前聚焦 pane（新 pane 附着新会话），分隔条可拖动。
+- 打开页面时若 URL 带 `?id=xxx` 且会话仍存活，自动打开该会话，兼容
+  旧版单会话分享链接。
 
 ## 会话驱动流程
 
-打开页面时 `App.vue` 按以下流程建立连接：
+`TerminalPane` 挂载后按以下流程建立连接：
 
-1. 读取 URL 中的 `?id=xxx`；若该会话仍存活（`GET /api/sessions/:id`），
-   直接复用；
-2. 否则通过 `POST /api/sessions` 创建一个新会话（`command` 传空串，
-   服务端使用 CLI 启动时给定的默认命令），并把会话 ID 写回 URL；
-3. 以 `WS /ws?session_id=<id>`（子协议 `webtty`）附着到会话；
-4. 连接断开且服务端允许重连时，先通过 `resolveSession()` 确认会话是否
-   仍然存活，若已销毁（如空闲超时），自动创建新会话再重连。
+1. 通过 `GET /api/sessions/:id` 确认绑定会话仍存活；
+2. 以 `WS /ws?session_id=<id>`（子协议 `webtty`）附着；
+3. 连接断开且服务端允许重连时，`resolveSession()` 再次确认会话存活；
+   返回 `null`（会话已销毁）则停止重连并提示，不再自动创建新会话 ——
+   新建会话只由左侧边栏发起，保证会话生命周期单一归属。
 
 ## WebTTY 协议
 
