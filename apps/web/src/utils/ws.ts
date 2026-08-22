@@ -103,6 +103,8 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
         ws.onopen = () => {
             logger.info('ws', 'connected session=%s', sid)
             hooks.onConnect?.()
+            // onopen 时连接必然已就绪:取局部常量以便 TS 类型收窄(闭包内无法收窄捕获的可变 ws)
+            const sock = ws!
 
             // 回调只绑定一次;闭包引用的是最新 ws 变量,始终发往当前连接
             if (!inputBound) {
@@ -117,12 +119,12 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                 })
             }
             const { columns, rows } = term.info()
-            ws.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
+            sock.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
 
             // 立即测一次延迟(不等第一个周期),之后每 2s 心跳保活 +
             // 刷新延迟/抖动指标(标题栏右侧展示)
             pendingPingAt = performance.now()
-            ws.send(encode(MSG_PING))
+            sock.send(encode(MSG_PING))
             pingTimer = setInterval(() => {
                 pendingPingAt = performance.now()
                 if (ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_PING))
