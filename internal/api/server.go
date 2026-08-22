@@ -153,16 +153,19 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 
 // setupHandlers wires the route table:
 //
-//	GET  /                    terminal page (vite build 产物)
-//	GET  /main.js             前端 bundle
-//	GET  /favicon.png         favicon
-//	POST /api/sessions        create session
-//	GET  /api/sessions        list sessions
-//	GET  /api/sessions/{id}   session detail
-//	DELETE /api/sessions/{id} destroy session
+//	GET  /                          terminal page (vite build 产物)
+//	GET  /main.js                   前端 bundle
+//	GET  /favicon.png               favicon
+//	POST /api/sessions              create session (client id → idempotent/resurrect)
+//	POST /api/sessions/status       batch liveness of client manifest ids
+//	GET  /api/sessions/{id}         session detail
+//	DELETE /api/sessions/{id}       destroy session
 //	POST /api/sessions/{id}/resize
 //	POST /api/sessions/{id}/signal
-//	GET  /ws                  WebSocket(多会话复用,协议见 docs/ws-multiplex.md)
+//	GET  /ws                        WebSocket(多会话复用,协议见 docs/ws-multiplex.md)
+//
+// 注意:会话列表不再由服务端提供(客户端 localStorage 清单是列表来源),
+// 因此 GET /api/sessions 与 GET /api/sessions/history 已移除。
 func (server *Server) setupHandlers() http.Handler {
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -174,8 +177,7 @@ func (server *Server) setupHandlers() http.Handler {
 
 	// REST API — session management
 	apiMux.HandleFunc("POST /api/sessions", server.handleCreateSession)
-	apiMux.HandleFunc("GET /api/sessions", server.handleListSessions)
-	apiMux.HandleFunc("GET /api/sessions/history", server.handleListHistory)
+	apiMux.HandleFunc("POST /api/sessions/status", server.handleSessionStatus)
 	apiMux.HandleFunc("GET /api/sessions/{id}", server.handleGetSession)
 	apiMux.HandleFunc("PUT /api/sessions/{id}/title", server.handleUpdateTitle)
 	apiMux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)

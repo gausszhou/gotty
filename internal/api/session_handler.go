@@ -9,22 +9,31 @@ import (
 
 	"github.com/gausszhou/gotty/internal/session"
 	"github.com/gausszhou/gotty/internal/terminal"
+	"github.com/gausszhou/gotty/internal/utils"
 )
 
 // Rest API — session management.
+// 列表由客户端清单(localStorage)驱动;服务端只按 id 提供:
+// 创建(幂等/复活)、详情、状态批量查询、销毁、重命名、resize/signal。
 
 type createSessionRequest struct {
+	ID      string   `json:"id"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 	Width   int      `json:"width"`
 	Height  int      `json:"height"`
 }
 
-type listSessionsResponse struct {
-	Sessions []session.StateDescription `json:"sessions"`
+type sessionStatusResponse struct {
+	// Sessions keyed by id, alive ones only.
+	Sessions map[string]session.StateDescription `json:"sessions"`
 }
 
 // handleCreateSession implements POST /api/sessions.
+// A client-chosen id (16 base36 chars) makes the call idempotent
+// (alive → existing session) or resurrect the recorded session
+// (record → rebuild with the recorded command, run_count+1).
+// Without an id the server generates one (legacy clients).
 func (server *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -32,16 +41,18 @@ func (server *Server) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if req.ID != "" && !utils.IsValidSessionID(req.ID) {
+		writeError(w, http.StatusBadRequest, "invalid session id: must be 16 base36 characters")
+		return
+	}
+
 	command := req.Command
 	args := req.Args
 	if command == "" {
-		// Fall back to the command given on the CLI, together with its args.
+		// 空命令统一回退到 CLI 默认命令(新建会话用)。
+		// 复活会话由 CreateWithID 用记录命令重建,不受此回退影响。
 		command = server.options.DefaultCommand
 		args = server.options.DefaultArgs
-	}
-	if command == "" {
-		writeError(w, http.StatusBadRequest, "no command given")
-		return
 	}
 
 	var termOpts []terminal.Option
@@ -49,11 +60,13 @@ func (server *Server) handleCreateSession(w http.ResponseWriter, r *http.Request
 		termOpts = append(termOpts, terminal.WithInitialSize(req.Width, req.Height))
 	}
 
-	sess, err := server.manager.Create(command, args, termOpts...)
+	sess, created, err := server.manager.CreateWithID(req.ID, command, args, termOpts...)
 	if err != nil {
 		switch err {
 		case session.ErrTooManySessions:
 			writeError(w, http.StatusServiceUnavailable, "too many sessions")
+		case session.ErrNoCommand:
+			writeError(w, http.StatusBadRequest, "no command given")
 		default:
 			log.Printf("Failed to create session: %s", err)
 			writeError(w, http.StatusInternalServerError, "failed to create session")
@@ -61,30 +74,33 @@ func (server *Server) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	status := http.StatusCreated
+	if !created {
+		// 幂等命中已有会话
+		status = http.StatusOK
+	}
 	log.Printf("Session created: %s (%s %v)", sess.ID(), sess.Command(), sess.Args())
-	writeJSON(w, http.StatusCreated, sess.StateDescription())
+	writeJSON(w, status, sess.StateDescription())
 }
 
-// handleListSessions implements GET /api/sessions.
-func (server *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions := server.manager.List()
-	descriptions := make([]session.StateDescription, 0, len(sessions))
-	for _, sess := range sessions {
-		if sess.State() == session.StateDestroyed {
-			continue
-		}
-		descriptions = append(descriptions, sess.StateDescription())
+// handleSessionStatus implements POST /api/sessions/status.
+// The client manifest polls this to learn which of its ids are alive.
+func (server *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: descriptions})
-}
-
-// handleListHistory implements GET /api/sessions/history
-// (persisted session history across restarts).
-func (server *Server) handleListHistory(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"sessions": server.manager.History(),
-	})
+	resp := sessionStatusResponse{
+		Sessions: map[string]session.StateDescription{},
+	}
+	for _, sess := range server.manager.Status(req.IDs) {
+		resp.Sessions[sess.ID()] = sess.StateDescription()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleUpdateTitle implements PUT /api/sessions/{id}/title

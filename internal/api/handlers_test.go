@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,51 @@ func createSession(t *testing.T, ts *httptest.Server, body string) map[string]in
 	return result
 }
 
+// createSessionWithID posts an explicit client id; expectedStatus asserts
+// the response status (200 idempotent hit, 201 fresh create).
+func createSessionWithID(t *testing.T, ts *httptest.Server, id, body string, expectedStatus int) map[string]interface{} {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build request: %s", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to create session: %s", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %s", err)
+	}
+	if resp.StatusCode != expectedStatus {
+		t.Fatalf("unexpected status: %d (want %d), body: %v", resp.StatusCode, expectedStatus, result)
+	}
+	return result
+}
+
+// postStatus queries the liveness of the given ids.
+func postStatus(t *testing.T, ts *httptest.Server, ids []string) sessionStatusResponse {
+	t.Helper()
+	body, _ := json.Marshal(map[string]interface{}{"ids": ids})
+	resp, err := http.Post(ts.URL+"/api/sessions/status", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to post status: %s", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status code: %d", resp.StatusCode)
+	}
+	var out sessionStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("failed to decode status: %s", err)
+	}
+	return out
+}
+
 func TestRESTLifecycle(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 
@@ -86,28 +132,17 @@ func TestRESTLifecycle(t *testing.T) {
 		t.Fatalf("unexpected state: %v", created["state"])
 	}
 
-	// list
-	resp, err := http.Get(ts.URL + "/api/sessions")
-	if err != nil {
-		t.Fatalf("failed to list sessions: %s", err)
+	// alive check via the status endpoint (list endpoint no longer exists)
+	status := postStatus(t, ts, []string{id, "zzzzzzzzzzzzzzzz"})
+	if _, ok := status.Sessions[id]; !ok {
+		t.Fatal("created session missing from status")
 	}
-	defer resp.Body.Close()
-	var list listSessionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		t.Fatalf("failed to decode list: %s", err)
-	}
-	found := false
-	for _, s := range list.Sessions {
-		if s.ID == id {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("created session missing from list")
+	if _, ok := status.Sessions["zzzzzzzzzzzzzzzz"]; ok {
+		t.Fatal("unknown session must not be reported alive")
 	}
 
 	// get
-	resp, err = http.Get(ts.URL + "/api/sessions/" + id)
+	resp, err := http.Get(ts.URL + "/api/sessions/" + id)
 	if err != nil {
 		t.Fatalf("failed to get session: %s", err)
 	}
@@ -410,4 +445,109 @@ func TestManagerSweepRemovesExitedSession(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("exited session was not removed by the manager sweep")
+}
+
+// TestCreateWithClientIDIdempotent: 同一客户端 id 重复创建 → 幂等,返回同一会话。
+func TestCreateWithClientIDIdempotent(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	const id = "a000000000000000" // 16 base36 chars
+
+	first := createSessionWithID(t, ts, id, `{"id":"`+id+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusCreated)
+	second := createSessionWithID(t, ts, id, `{"id":"`+id+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusOK)
+
+	if first["id"] != id || second["id"] != id {
+		t.Fatalf("session id mismatch: %v vs %v", first["id"], second["id"])
+	}
+	if first["pid"].(float64) != second["pid"].(float64) {
+		t.Fatalf("idempotent create must return the same session, pids differ: %v vs %v", first["pid"], second["pid"])
+	}
+
+	// 幂等命中不额外创建:第三次仍是同一会话
+	thrice := createSessionWithID(t, ts, id, `{"id":"`+id+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusOK)
+	if thrice["pid"].(float64) != first["pid"].(float64) {
+		t.Fatal("repeated idempotent create must keep returning the same session")
+	}
+}
+
+// TestCreateWithClientIDResurrect: 销毁后凭同 id 重建 → 复活(记录命令),run_count+1。
+func TestCreateWithClientIDResurrect(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	const id = "a000000000000001"
+
+	created := createSessionWithID(t, ts, id, `{"id":"`+id+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusCreated)
+	pid1 := created["pid"].(float64)
+	_ = created
+
+	// 销毁后记录仍在服务端
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+id, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to destroy: %s", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected destroy status: %d", resp.StatusCode)
+	}
+	if st := postStatus(t, ts, []string{id}); len(st.Sessions) != 0 {
+		t.Fatal("destroyed session must not be alive")
+	}
+
+	// 重跑:同 id 复活,新的 pid,记录命令保留(sh -c sleep 30)
+	resurrected := createSessionWithID(t, ts, id, `{"id":"`+id+`"}`, http.StatusCreated)
+	if resurrected["id"] != id {
+		t.Fatalf("resurrected session id mismatch: %v", resurrected["id"])
+	}
+	if resurrected["pid"].(float64) == pid1 {
+		t.Fatal("resurrected session must be a new process")
+	}
+	if resurrected["command"] != "sh" {
+		t.Fatalf("resurrected session must use the recorded command, got: %v", resurrected["command"])
+	}
+}
+
+// TestCreateWithClientIDRejectsBadFormat: 非法 id 格式 → 400。
+func TestCreateWithClientIDRejectsBadFormat(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+
+	for _, bad := range []string{"", "short", "UPPERCASE00000000", "invalid-char-00000", "too-long-0000000000000"} {
+		if bad == "" {
+			continue // 空 id 合法(服务端生成)
+		}
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions",
+			strings.NewReader(`{"id":"`+bad+`","command":"sh"}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("failed to create with bad id: %s", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 for id %q, got %d", bad, resp.StatusCode)
+		}
+	}
+}
+
+// TestSessionStatusBatch: status 只返回存活的清单 id,顺序无关。
+func TestSessionStatusBatch(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	const (
+		ida = "a00000000000000a"
+		idb = "a00000000000000b"
+	)
+
+	createSessionWithID(t, ts, ida, `{"id":"`+ida+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusCreated)
+	createSessionWithID(t, ts, idb, `{"id":"`+idb+`","command":"sh","args":["-c","sleep 30"]}`, http.StatusCreated)
+
+	st := postStatus(t, ts, []string{idb, ida, "dead000000000000"})
+	if len(st.Sessions) != 2 {
+		t.Fatalf("expected 2 alive sessions, got %d", len(st.Sessions))
+	}
+	if _, ok := st.Sessions[ida]; !ok {
+		t.Fatal("ida must be alive")
+	}
+	if _, ok := st.Sessions[idb]; !ok {
+		t.Fatal("idb must be alive")
+	}
+	if _, ok := st.Sessions["dead000000000000"]; ok {
+		t.Fatal("dead id must not be reported")
+	}
 }
