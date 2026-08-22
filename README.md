@@ -49,10 +49,28 @@ ids and never preempt each other; the same id re-attach still preempts
 (WS close 1013).
 
 Starting without a command (`gotty serve`) falls back to the login shell
-(`$SHELL`, or `/bin/sh` when unset) as the default session command, so the
-page always opens with a usable terminal. An explicit command in
-`POST /api/sessions` always takes precedence (except for resurrected
-sessions, which use the recorded command).
+(`$SHELL`, or `/bin/sh` when unset) as the default session command, so a
+session created from the page without an explicit command is always usable.
+An explicit command in `POST /api/sessions` always takes precedence (except
+for resurrected sessions, which use the recorded command).
+
+## Copy & Paste
+
+The terminal supports the usual browser clipboard shortcuts, so Linux users
+don't need to fight the terminal meaning of `Ctrl+C`/`Ctrl+V`:
+
+- **Select** text with the mouse (double-click = word, triple-click = line).
+- **Copy**: `Ctrl+Shift+C` (Linux/Windows) or `Cmd+C` (macOS). Plain
+  `Ctrl+C` copies when there is a selection, otherwise it is the normal
+  interrupt (SIGINT) sent to the shell.
+- **Paste**: `Ctrl+Shift+V`, `Ctrl+V`, `Cmd+V` (macOS), or **right-click**
+  anywhere inside the terminal.
+- **OSC 52**: programs inside the terminal (vim's `+clipboard`, tmux with
+  `set -g set-clipboard on`, SSH sessions) can read and write the browser's
+  system clipboard through the `OSC 52` protocol.
+- Copying/pasting uses the Clipboard API where available (HTTPS/localhost)
+  and falls back to `execCommand` in non-secure contexts (e.g. plain HTTP
+  on a LAN).
 
 ## Theme & Terminal Colors
 

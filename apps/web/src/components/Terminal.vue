@@ -1,5 +1,6 @@
 <template>
-  <div ref="terminalEl" class="terminal-container"></div>
+  <!-- 右键 = 粘贴(替代浏览器上下文菜单),见 utils/clipboard.ts -->
+  <div ref="terminalEl" class="terminal-container" @contextmenu.prevent="onContextMenu"></div>
 </template>
 
 <script setup lang="ts">
@@ -10,6 +11,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { currentTheme, onThemeChange, type Theme } from '../utils/theme'
+import { useXTermClipboard, pasteFromClipboard, loadClipboardAddon } from '../utils/clipboard'
 
 const emit = defineEmits<{
     // 服务端 SetWindowTitle 帧;不再直接写 document.title,
@@ -60,6 +62,8 @@ onMounted(() => {
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
+  // OSC 52:终端内程序(vim/tmux/ssh)读写浏览器系统剪贴板
+  loadClipboardAddon(term)
 
   // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时
   // loadAddon 会抛错,自动回退到 xterm 内置的 DOM 渲染器。
@@ -70,6 +74,9 @@ onMounted(() => {
   }
 
   term.open(terminalEl.value!)
+
+  // 复制/粘贴快捷键(Ctrl+Shift+C/V、Ctrl+C 选区复制、Ctrl+V 粘贴)
+  useXTermClipboard(term)
 
   // xterm.css 的 .terminal 规则自带默认等宽字体;显式覆盖到元素上,
   // 保证 WebGL 与 DOM 两种渲染路径都使用配置的字体栈。
@@ -95,6 +102,11 @@ onBeforeUnmount(() => {
   unsubscribeTheme?.()
   term?.dispose()
 })
+
+// onContextMenu:右键在终端区域内粘贴
+function onContextMenu() {
+    void pasteFromClipboard(term)
+}
 
 // fit 重新适配容器尺寸;v-show 隐藏后重新显示时必须调用
 // (隐藏时容器尺寸为 0,fit 结果无效)

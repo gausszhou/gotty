@@ -34,7 +34,7 @@ release: frontend static
 install:
 	pnpm install
 
-# Build frontend: Vite + Vue 3 + xterm.js v6 + WebGL (apps/web)
+# Build frontend: Vite + Vue 3 + xterm.js v5 + WebGL (apps/web)
 frontend:
 	pnpm --filter gotty-frontend build
 
