@@ -2,6 +2,7 @@
 // 会话列表由客户端 localStorage 清单(utils/manifest.ts)驱动,
 // 服务端只提供:创建(幂等/复活)、详情、状态批量查询、销毁、重命名。
 import { logger } from './logger'
+import type { Theme } from './theme'
 
 export interface SessionInfo {
     id: string;
@@ -47,13 +48,17 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
 // createSession 新建会话;command 为空时服务端回退到默认命令($SHELL)。
 // id 为客户端生成的会话 id(16 位 base36):已存活 → 幂等返回现有会话;
 // 服务端有记录 → 复活(记录命令重建,run_count+1);无 id → 服务端生成。
+// theme 上报创建设备的页面主题(dark/light),服务端据此设置 PTY 的
+// COLORFGBG,让会话内的程序按实际背景深浅着色。
 export async function createSession(
     command = '',
     args: string[] = [],
     id?: string,
+    theme?: Theme,
 ): Promise<SessionInfo> {
     const body: Record<string, unknown> = { command, args };
     if (id) body.id = id;
+    if (theme) body.theme = theme;
     return fetchJSON<SessionInfo>('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

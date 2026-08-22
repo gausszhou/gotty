@@ -242,8 +242,8 @@ const (
 
 ```json
 // POST /api/sessions —— 客户端生成 id(幂等/复活;201 新建,200 幂等命中)
-// Request:
-{ "id": "abc123abc123abca", "command": "bash", "args": [], "width": 80, "height": 24 }
+// Request(theme 为创建设备的页面深浅色,dark/light,决定 PTY 的 COLORFGBG):
+{ "id": "abc123abc123abca", "command": "bash", "args": [], "width": 80, "height": 24, "theme": "light" }
 
 // Response:
 {
@@ -264,6 +264,17 @@ const (
   }
 }
 ```
+
+> 主题与终端配色:页面亮/暗主题不仅驱动 CSS 变量与 xterm 配色,还会
+> 传播进 PTY 进程,让会话内程序按实际背景渲染——
+> ① 每个会话启动时注入 `COLORTERM=truecolor`(neovim/lazygit 等据此开启
+> 24-bit 真彩)与 `COLORFGBG`(rxvt 惯例 `前景;背景`:深色 `15;0`、浅色
+> `0;15`;浅色由创建请求的 `theme` 字段映射,未传/未知一律深色);
+> ② 运行期程序主动查询背景(`OSC 10/11 ; ?`,如 vim 的 `t_RB`、tmux
+> 背景检测)时,由 xterm.js 用当前 theme 应答 `rgb:...`,经 WS 双向桥接
+> 天然可用。`buildEnv` 剥离继承的 `TERM/COLORTERM/COLORFGBG` 并统一注入
+> 默认值;`env` 配置中的同名条目可覆盖默认,客户端主题的 `COLORFGBG`
+> 因位于 base 选项之后而优先于服务端配置。
 
 ---
 

@@ -31,6 +31,7 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import Terminal from './Terminal.vue'
 import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
 import { getSession, createSession } from '../utils/api'
+import { currentTheme } from '../utils/theme'
 import { findManifestEntry, upsertManifest } from '../utils/manifest'
 import { logger } from '../utils/logger'
 
@@ -74,7 +75,7 @@ async function rebuildSession(): Promise<string | null> {
     const entry = findManifestEntry(props.sessionId)
     logger.info('attach', 'session %s gone, rebuilding (command=%s)', props.sessionId, entry?.command ?? '(default)')
     try {
-        const s = await createSession(entry?.command ?? '', entry?.args ?? [], props.sessionId)
+        const s = await createSession(entry?.command ?? '', entry?.args ?? [], props.sessionId, currentTheme())
         upsertManifest({
             id: s.id,
             command: s.command,

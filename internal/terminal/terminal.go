@@ -86,8 +86,20 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 }
 
 // buildEnv composes the process environment: the current environment,
-// a TERM value (defaulting to "xterm-256color") and the configured overrides.
-// Overrides listed later win over the defaults and never duplicate keys.
+// a TERM value (defaulting to "xterm-256color"), COLORTERM/COLORFGBG
+// (truecolor + the light/dark background the page renders) and the
+// configured overrides. Overrides listed later win over the defaults
+// and never duplicate keys.
+//
+// COLORTERM=truecolor lets TUIs (neovim, lazygit, fzf, …) enable 24-bit
+// colors — xterm.js renders them natively, so the capability always holds.
+// COLORFGBG is the rxvt/urxvt foreground;background convention that some
+// programs (screen, vifm, …) read to pick colors for light vs. dark
+// backgrounds. The dark default "15;0" (white on black) is overridden with
+// "0;15" (black on white) when the creating client's page theme is light.
+// Live OSC 10/11 queries (vim's t_RB, tmux background detection) are
+// answered by the xterm.js side with the same colors, so programs that ask
+// don't depend on these variables.
 //
 // For bash sessions it additionally injects PROMPT_COMMAND so that the mouse
 // reporting modes (DECSET 1000/1002/1003/1006) are reset just before every
@@ -97,6 +109,8 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 // clicks, which appear as garbage on the terminal.
 func buildEnv(command string, extra []string) []string {
 	termValue := "xterm-256color"
+	colorTermValue := "truecolor"
+	colorFgBgValue := "15;0" // 深色(白字黑底);浅色会话由服务端注入 "0;15"
 	// 默认注入 PROMPT_COMMAND;用户显式配置时以用户为准
 	promptReset := true
 	extras := make([]string, 0, len(extra))
@@ -104,6 +118,10 @@ func buildEnv(command string, extra []string) []string {
 		switch {
 		case strings.HasPrefix(kv, "TERM="):
 			termValue = strings.TrimPrefix(kv, "TERM=")
+		case strings.HasPrefix(kv, "COLORTERM="):
+			colorTermValue = strings.TrimPrefix(kv, "COLORTERM=")
+		case strings.HasPrefix(kv, "COLORFGBG="):
+			colorFgBgValue = strings.TrimPrefix(kv, "COLORFGBG=")
 		case strings.HasPrefix(kv, "PROMPT_COMMAND="):
 			promptReset = false
 			extras = append(extras, kv)
@@ -113,13 +131,18 @@ func buildEnv(command string, extra []string) []string {
 	}
 
 	original := os.Environ()
-	env := make([]string, 0, len(original)+len(extras)+2)
+	env := make([]string, 0, len(original)+len(extras)+4)
 	for _, kv := range original {
-		if !strings.HasPrefix(kv, "TERM=") {
+		// 颜色相关的继承变量一律剥离,统一以本层默认/覆盖值为准
+		if !strings.HasPrefix(kv, "TERM=") &&
+			!strings.HasPrefix(kv, "COLORTERM=") &&
+			!strings.HasPrefix(kv, "COLORFGBG=") {
 			env = append(env, kv)
 		}
 	}
 	env = append(env, "TERM="+termValue)
+	env = append(env, "COLORTERM="+colorTermValue)
+	env = append(env, "COLORFGBG="+colorFgBgValue)
 
 	if isBash(command) && promptReset {
 		// bash 每次显示提示符前执行 printf,发送鼠标模式复位序列。
