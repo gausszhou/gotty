@@ -1,0 +1,232 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/gausszhou/gotty/internal/terminal"
+	"github.com/gausszhou/gotty/internal/utils"
+)
+
+// Errors returned by the Manager.
+var (
+	// ErrNotFound is returned when no session with the given id exists.
+	ErrNotFound = errors.New("session not found")
+	// ErrTooManySessions is returned when the manager is full.
+	ErrTooManySessions = errors.New("too many sessions")
+)
+
+// TerminalFactory creates a Terminal. The default factory wraps
+// terminal.New; tests may inject a stub.
+type TerminalFactory func(command string, args []string, opts ...terminal.Option) (Terminal, error)
+
+// Manager is the registry and lifecycle owner of all sessions.
+type Manager struct {
+	mu       sync.Mutex
+	sessions map[string]*Session
+	store    Store
+
+	maxSession  int
+	idleTimeout time.Duration
+	baseOpts    []terminal.Option
+	factory     TerminalFactory
+}
+
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithMaxSession caps the number of concurrently alive sessions (0 = unlimited).
+func WithMaxSession(n int) Option {
+	return func(m *Manager) {
+		m.maxSession = n
+	}
+}
+
+// WithIdleTimeout destroys sessions that stay unattached for the given
+// duration (0 = disabled).
+func WithIdleTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		m.idleTimeout = d
+	}
+}
+
+// WithTerminalOptions applies base options to every created terminal.
+func WithTerminalOptions(options terminal.Options) Option {
+	return func(m *Manager) {
+		m.baseOpts = append(m.baseOpts,
+			terminal.WithCloseSignal(parseSignal(options.CloseSignal, terminal.DefaultCloseSignal)),
+			terminal.WithTerm(options.Term),
+			terminal.WithEnv(options.Env),
+		)
+		if options.CloseTimeout >= 0 {
+			m.baseOpts = append(m.baseOpts,
+				terminal.WithCloseTimeout(time.Duration(options.CloseTimeout)*time.Second))
+		}
+	}
+}
+
+// WithTerminalFactory overrides the terminal constructor (mainly for tests).
+func WithTerminalFactory(factory TerminalFactory) Option {
+	return func(m *Manager) {
+		m.factory = factory
+	}
+}
+
+// WithStore sets the metadata store. Defaults to a MemoryStore.
+func WithStore(store Store) Option {
+	return func(m *Manager) {
+		m.store = store
+	}
+}
+
+// NewManager creates a session manager.
+func NewManager(options ...Option) *Manager {
+	m := &Manager{
+		sessions: make(map[string]*Session),
+		store:    NewMemoryStore(),
+		factory: func(command string, args []string, opts ...terminal.Option) (Terminal, error) {
+			return terminal.New(command, args, opts...)
+		},
+	}
+	for _, option := range options {
+		option(m)
+	}
+	return m
+}
+
+// parseSignal converts a numeric signal to syscall.Signal, falling back
+// to the default when the value is invalid.
+func parseSignal(value int, fallback syscall.Signal) syscall.Signal {
+	if value > 0 {
+		return syscall.Signal(value)
+	}
+	return fallback
+}
+
+// Create starts a new session running command.
+// termOpts are applied on top of the manager's base terminal options
+// (e.g. terminal.WithInitialSize for the requested PTY size).
+func (m *Manager) Create(command string, args []string, termOpts ...terminal.Option) (*Session, error) {
+	m.mu.Lock()
+
+	if m.maxSession > 0 && len(m.sessions) >= m.maxSession {
+		m.mu.Unlock()
+		return nil, ErrTooManySessions
+	}
+
+	opts := make([]terminal.Option, 0, len(m.baseOpts)+len(termOpts))
+	opts = append(opts, m.baseOpts...)
+	opts = append(opts, termOpts...)
+
+	term, err := m.factory(command, args, opts...)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("failed to create terminal: %w", err)
+	}
+
+	s := New(utils.RandomString(16), term)
+	m.sessions[s.ID()] = s
+	_ = m.store.Record(Metadata{
+		ID:        s.ID(),
+		Command:   command,
+		Args:      args,
+		State:     s.State(),
+		CreatedAt: s.CreatedAt().Unix(),
+	})
+
+	m.mu.Unlock()
+	return s, nil
+}
+
+// Get returns the session with the given id.
+func (m *Manager) Get(id string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return s, nil
+}
+
+// List returns a snapshot of all alive sessions.
+func (m *Manager) List() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// Count returns the number of alive sessions.
+func (m *Manager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions)
+}
+
+// Destroy stops the process of the session and removes it from the registry.
+func (m *Manager) Destroy(id string) error {
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	m.mu.Unlock()
+
+	if err := s.Destroy(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.sessions, id)
+	_ = m.store.Forget(id)
+	m.mu.Unlock()
+	return nil
+}
+
+// Start runs the maintenance loop (expiry sweep) until ctx is canceled.
+func (m *Manager) Start(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.DestroyExpired()
+			}
+		}
+	}()
+}
+
+// DestroyExpired removes exited and destroyed sessions, and destroys
+// sessions that stayed unattached beyond the idle timeout.
+func (m *Manager) DestroyExpired() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, s := range m.sessions {
+		switch {
+		case s.State() == StateDestroyed, s.Exited():
+			delete(m.sessions, id)
+			_ = m.store.Forget(id)
+
+		case m.idleTimeout > 0 && s.State() == StateIdle &&
+			time.Since(s.LastTouched()) >= m.idleTimeout:
+			s.Destroy()
+			delete(m.sessions, id)
+			_ = m.store.Forget(id)
+		}
+	}
+}

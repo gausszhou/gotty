@@ -1,11 +1,12 @@
 OUTPUT_DIR := ./build
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null | cut -c1-7)
 VERSION    ?= 2.0.0
-LDFLAGS    := -X main.Version=$(VERSION) -X main.CommitID=$(GIT_COMMIT)
+LDFLAGS    := -X github.com/gausszhou/gotty/cmd.Version=$(VERSION) -X github.com/gausszhou/gotty/cmd.CommitID=$(GIT_COMMIT)
+UPX        ?= upx
 
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+PLATFORMS := linux/amd64 linux/arm64
 
-.PHONY: all build frontend docs static test vet fmt clean install
+.PHONY: all build release frontend docs static test vet fmt clean install
 
 all: frontend static release
 
@@ -18,12 +19,12 @@ release: frontend static
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
 		arch=$${platform#*/}; \
-		ext=""; \
-		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
 		echo "Building $$os/$$arch..."; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
 			-ldflags "$(LDFLAGS) -s -w" \
-			-o $(OUTPUT_DIR)/gotty-$$os-$$arch$$ext .; \
+			-o $(OUTPUT_DIR)/gotty-$$os-$$arch .; \
+		echo "Compressing with UPX..."; \
+		$(UPX) --best --lzma $(OUTPUT_DIR)/gotty-$$os-$$arch; \
 	done
 
 # Install all frontend workspace dependencies (pnpm workspace: apps/web + apps/docs)
@@ -38,14 +39,14 @@ frontend:
 docs:
 	pnpm --filter gotty-docs build
 
-# Copy static assets + bundle into internal/server/static for go:embed
+# Copy static assets + bundle into internal/api/static for go:embed
 static: frontend
-	@mkdir -p internal/server/static/js internal/server/static/css
-	cp apps/web/static/index.html internal/server/static/index.html
-	cp apps/web/static/favicon.png internal/server/static/favicon.png
-	cp apps/web/static/css/index.css internal/server/static/css/index.css
-	cp apps/web/static/css/xterm_customize.css internal/server/static/css/xterm_customize.css
-	cp apps/web/dist/gotty-bundle.js internal/server/static/js/gotty-bundle.js
+	@mkdir -p internal/api/static/js internal/api/static/css
+	cp apps/web/static/index.html internal/api/static/index.html
+	cp apps/web/static/favicon.png internal/api/static/favicon.png
+	cp apps/web/static/css/index.css internal/api/static/css/index.css
+	cp apps/web/static/css/xterm_customize.css internal/api/static/css/xterm_customize.css
+	cp apps/web/dist/gotty-bundle.js internal/api/static/js/gotty-bundle.js
 
 test: vet fmt
 	go test ./...
@@ -58,4 +59,4 @@ fmt:
 
 clean:
 	rm -rf $(OUTPUT_DIR)
-	rm -rf internal/server/static apps/web/dist apps/docs/.vitepress/dist node_modules apps/web/node_modules apps/docs/node_modules
+	rm -rf internal/api/static apps/web/dist apps/docs/.vitepress/dist node_modules apps/web/node_modules apps/docs/node_modules

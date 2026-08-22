@@ -1,13 +1,14 @@
 gotty
 bindata
 build/
-internal/server/static
+internal/api/static
 
 # pnpm workspace
 node_modules
 apps/*/node_modules
 apps/*/dist
 apps/*/.vitepress/dist
+apps/*/.vitepress/cache
 
 .tmp/
 
