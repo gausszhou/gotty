@@ -6,6 +6,9 @@ UPX        ?= upx
 
 PLATFORMS := linux/amd64 linux/arm64
 
+# Default target: 单平台开发构建;多平台发布请显式执行 `make release`
+.DEFAULT_GOAL := build
+
 .PHONY: all build release frontend docs static test vet fmt clean install
 
 all: frontend static release
