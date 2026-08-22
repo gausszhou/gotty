@@ -1,4 +1,18 @@
 gotty
 bindata
-builds
-js/node_modules/*
+build/
+internal/server/static
+
+# pnpm workspace
+node_modules
+apps/*/node_modules
+apps/*/dist
+apps/*/.vitepress/dist
+
+.tmp/
+
+# npm ecosystem lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb

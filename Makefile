@@ -1,80 +1,61 @@
-OUTPUT_DIR = ./builds
-GIT_COMMIT = `git rev-parse HEAD | cut -c1-7`
-VERSION = 2.0.0-alpha.3
-BUILD_OPTIONS = -ldflags "-X main.Version=$(VERSION) -X main.CommitID=$(GIT_COMMIT)"
+OUTPUT_DIR := ./build
+GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null | cut -c1-7)
+VERSION    ?= 2.0.0
+LDFLAGS    := -X main.Version=$(VERSION) -X main.CommitID=$(GIT_COMMIT)
 
-gotty: main.go server/*.go webtty/*.go backend/*.go Makefile
-	godep go build ${BUILD_OPTIONS}
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: asset
-asset: bindata/static/js/gotty-bundle.js bindata/static/index.html bindata/static/favicon.png bindata/static/css/index.css bindata/static/css/xterm.css bindata/static/css/xterm_customize.css
-	go-bindata -prefix bindata -pkg server -ignore=\\.gitkeep -o server/asset.go bindata/...
-	gofmt -w server/asset.go
+.PHONY: all build frontend docs static test vet fmt clean install
 
-.PHONY: all
-all: asset gotty
+all: frontend static release
 
-bindata:
-	mkdir bindata
+build: frontend static
+	@mkdir -p $(OUTPUT_DIR)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS) -s -w" -o $(OUTPUT_DIR)/gotty .
 
-bindata/static: bindata
-	mkdir bindata/static
+release: frontend static
+	@mkdir -p $(OUTPUT_DIR)
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		echo "Building $$os/$$arch..."; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
+			-ldflags "$(LDFLAGS) -s -w" \
+			-o $(OUTPUT_DIR)/gotty-$$os-$$arch$$ext .; \
+	done
 
-bindata/static/index.html: bindata/static resources/index.html
-	cp resources/index.html bindata/static/index.html
+# Install all frontend workspace dependencies (pnpm workspace: apps/web + apps/docs)
+install:
+	pnpm install
 
-bindata/static/favicon.png: bindata/static resources/favicon.png
-	cp resources/favicon.png bindata/static/favicon.png
+# Build frontend: Vite + Vue 3 + xterm.js v6 + WebGL (apps/web)
+frontend:
+	pnpm --filter gotty-frontend build
 
-bindata/static/js: bindata/static
-	mkdir -p bindata/static/js
+# Build documentation site: VitePress (apps/docs)
+docs:
+	pnpm --filter gotty-docs build
 
+# Copy static assets + bundle into internal/server/static for go:embed
+static: frontend
+	@mkdir -p internal/server/static/js internal/server/static/css
+	cp apps/web/static/index.html internal/server/static/index.html
+	cp apps/web/static/favicon.png internal/server/static/favicon.png
+	cp apps/web/static/css/index.css internal/server/static/css/index.css
+	cp apps/web/static/css/xterm_customize.css internal/server/static/css/xterm_customize.css
+	cp apps/web/dist/gotty-bundle.js internal/server/static/js/gotty-bundle.js
 
-bindata/static/js/gotty-bundle.js: bindata/static/js js/dist/gotty-bundle.js
-	cp js/dist/gotty-bundle.js bindata/static/js/gotty-bundle.js
+test: vet fmt
+	go test ./...
 
-bindata/static/css: bindata/static
-	mkdir -p bindata/static/css
+vet:
+	go vet ./...
 
-bindata/static/css/index.css: bindata/static/css resources/index.css
-	cp resources/index.css bindata/static/css/index.css
+fmt:
+	@test -z "$$(gofmt -l .)" || (echo "gofmt errors:"; gofmt -l .; exit 1)
 
-bindata/static/css/xterm_customize.css: bindata/static/css resources/xterm_customize.css
-	cp resources/xterm_customize.css bindata/static/css/xterm_customize.css
-
-bindata/static/css/xterm.css: bindata/static/css js/node_modules/xterm/dist/xterm.css
-	cp js/node_modules/xterm/dist/xterm.css bindata/static/css/xterm.css
-
-js/node_modules/xterm/dist/xterm.css:
-	cd js && \
-	npm install
-
-js/dist/gotty-bundle.js: js/src/* js/node_modules/webpack
-	cd js && \
-	`npm bin`/webpack
-
-js/node_modules/webpack:
-	cd js && \
-	npm install
-
-tools:
-	go get github.com/tools/godep
-	go get github.com/mitchellh/gox
-	go get github.com/tcnksm/ghr
-	go get github.com/jteeuwen/go-bindata/...
-
-test:
-	if [ `go fmt $(go list ./... | grep -v /vendor/) | wc -l` -gt 0 ]; then echo "go fmt error"; exit 1; fi
-
-cross_compile:
-	GOARM=5 gox -os="darwin linux freebsd netbsd openbsd" -arch="386 amd64 arm" -osarch="!darwin/arm" -output "${OUTPUT_DIR}/pkg/{{.OS}}_{{.Arch}}/{{.Dir}}"
-
-targz:
-	mkdir -p ${OUTPUT_DIR}/dist
-	cd ${OUTPUT_DIR}/pkg/; for osarch in *; do (cd $$osarch; tar zcvf ../../dist/gotty_${VERSION}_$$osarch.tar.gz ./*); done;
-
-shasums:
-	cd ${OUTPUT_DIR}/dist; sha256sum * > ./SHA256SUMS
-
-release:
-	ghr -c ${GIT_COMMIT} --delete --prerelease -u yudai -r gotty pre-release ${OUTPUT_DIR}/dist
+clean:
+	rm -rf $(OUTPUT_DIR)
+	rm -rf internal/server/static apps/web/dist apps/docs/.vitepress/dist node_modules apps/web/node_modules apps/docs/node_modules
