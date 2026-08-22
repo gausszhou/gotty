@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +21,27 @@ import (
 	"github.com/gausszhou/gotty/internal/utils"
 )
 
+// setupLogFile writes the server log to path (append mode) in addition
+// to the console. Empty path keeps the console-only behavior.
+func setupLogFile(path string) error {
+	if path == "" {
+		return nil
+	}
+
+	logPath := utils.Expand(path)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create log directory `%s`: %w", filepath.Dir(logPath), err)
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file `%s`: %w", logPath, err)
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	log.Printf("Server log file: %s", logPath)
+	return nil
+}
+
 var (
 	appOptions      = &api.Options{}
 	terminalOptions = &terminal.Options{}
@@ -31,15 +54,16 @@ var (
 //
 // When a command is given on the CLI, it becomes the default command for
 // sessions created without an explicit one (empty "command" in
-// POST /api/sessions). Without a command the server starts in a pure
-// gateway mode and every session must specify its command via the REST API.
+// POST /api/sessions). Without a command, the user's login shell
+// ($SHELL, falling back to /bin/sh) is used, so that opening the page
+// always yields a usable session.
 func buildServeCmd() *cobra.Command {
 	serveCmd := &cobra.Command{
 		Use:   "serve [flags] [command [<arguments...>]]",
 		Short: "Start the terminal sharing server",
 		Long: "Start the terminal sharing server.\n\n" +
-			"Optionally provide a command to run in shared sessions;\n" +
-			"without one, session commands must be given via the REST API.",
+			"Provide a command (e.g. `gotty serve top`) to run in shared\n" +
+			"sessions; without one, the login shell ($SHELL) is used.",
 		Args: cobra.ArbitraryArgs,
 		RunE: runServe,
 	}
@@ -80,7 +104,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	configFile, _ := cmd.Flags().GetString("config")
 	_, statErr := os.Stat(utils.Expand(configFile))
-	if configFile != "~/.gotty" || !os.IsNotExist(statErr) {
+	if cmd.Flags().Changed("config") || !os.IsNotExist(statErr) {
+		// 显式 --config 时严格加载(不存在/目录均报错);
+		// 默认路径(~/.gotty/config.json)仅在其存在时加载。
 		if err := config.ApplyConfigFile(configFile, appOptions, terminalOptions); err != nil {
 			return fmt.Errorf("failed to load config file: %w", err)
 		}
@@ -88,12 +114,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	config.ApplyFlags(cmd, mappings, appOptions, terminalOptions)
 
+	// 服务端日志落盘(默认 ~/.gotty/logs/gotty.log,文件 + 控制台双写)
+	// 必须在任何日志输出之前初始化
+	if err := setupLogFile(appOptions.LogFile); err != nil {
+		return err
+	}
+
 	hostname, _ := os.Hostname()
 	var defaultCommand string
 	defaultArgs := []string{}
 	if len(args) > 0 {
 		defaultCommand = args[0]
 		defaultArgs = args[1:]
+	} else if shell := os.Getenv("SHELL"); shell != "" {
+		// 无命令时回退到登录 shell,保证页面打开即有可用会话
+		log.Printf("No command given, using the login shell: %s", shell)
+		defaultCommand = shell
+	} else {
+		log.Printf("No command given and $SHELL is unset, using: /bin/sh")
+		defaultCommand = "/bin/sh"
 	}
 	appOptions.TitleVariables = map[string]interface{}{
 		"command":  defaultCommand,
@@ -105,10 +144,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	appOptions.DefaultCommand = defaultCommand
 	appOptions.DefaultArgs = defaultArgs
 
+	var store session.Store = session.NewMemoryStore()
+	if appOptions.SessionFile != "" {
+		storePath := utils.Expand(appOptions.SessionFile)
+		fileStore, err := session.NewFileStore(storePath)
+		if err != nil {
+			return fmt.Errorf("failed to load session history: %w", err)
+		}
+		log.Printf("Session history file: %s", storePath)
+		store = fileStore
+	}
+
 	manager := session.NewManager(
 		session.WithMaxSession(appOptions.MaxSession),
 		session.WithIdleTimeout(time.Duration(appOptions.Timeout)*time.Second),
 		session.WithTerminalOptions(*terminalOptions),
+		session.WithStore(store),
 	)
 
 	srv, err := api.New(manager, appOptions)
@@ -119,11 +170,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	gCtx, gCancel := context.WithCancel(context.Background())
 
-	if len(args) > 0 {
-		log.Printf("GoTTY is starting with command: %s", strings.Join(args, " "))
-	} else {
-		log.Printf("GoTTY is starting without a default command (use the REST API to create sessions)")
-	}
+	log.Printf("GoTTY is starting with command: %s", strings.Join(append([]string{defaultCommand}, defaultArgs...), " "))
 
 	errs := make(chan error, 1)
 	go func() {

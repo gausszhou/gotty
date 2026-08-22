@@ -30,7 +30,8 @@ func init() {
 	// `gotty --config x serve` and `gotty serve --config x`.
 	configPath := os.Getenv("GOTTY_CONFIG")
 	if configPath == "" {
-		configPath = "~/.gotty"
+		// 默认配置文件位于配置目录下(与 logs/ 等共存)
+		configPath = "~/.gotty/config.json"
 	}
 	rootCmd.PersistentFlags().String("config", configPath, "Config file path (GOTTY_CONFIG env var)")
 

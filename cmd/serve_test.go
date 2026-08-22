@@ -30,7 +30,7 @@ func TestServeSubcommandRegistered(t *testing.T) {
 	}
 
 	for _, name := range []string{
-		"port", "address", "permit-write", "credential",
+		"port", "address", "permit-write",
 		"title-format", "reconnect", "reconnect-time",
 		"max-session", "timeout", "width", "height",
 		"ws-origin", "term", "tls", "tls-crt", "tls-key",
