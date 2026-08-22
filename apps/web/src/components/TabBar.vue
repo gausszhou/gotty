@@ -30,7 +30,7 @@
         class="icon-btn"
         :title="t('lang.toggle')"
         @click="toggleLang"
-      >{{ lang === 'zh' ? 'EN' : '中' }}</button>
+      >中/EN</button>
       <button
         class="icon-btn"
         :title="theme === 'light' ? t('theme.toLight') : t('theme.toDark')"
@@ -44,7 +44,7 @@
 import { computed } from 'vue'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
-import { lang, toggleLang, t } from '../utils/i18n'
+import { toggleLang, t } from '../utils/i18n'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
