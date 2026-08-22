@@ -19,12 +19,12 @@ jobs:
         uses: pnpm/action-setup@v4
 
       - name: Configure pnpm store
-        # 显式固定 store-dir,确保 setup-node 解析出的缓存路径与 pnpm install 实际使用的
-        # 路径一致且预先存在,避免 post 步骤 "Some specified paths were not resolved"
-        # (见 actions/setup-node#1137 / #543)
+        # 显式固定 store-dir,并创建 pnpm store path 解析出的精确目录
+        # (store-dir 会有 /v3 版本子目录),确保 setup-node 的缓存
+        # 路径解析成功,避免 "Some specified paths were not resolved"
         run: |
           pnpm config set store-dir "${{ runner.temp }}/pnpm-store"
-          mkdir -p "${{ runner.temp }}/pnpm-store"
+          mkdir -p "$(pnpm store path)"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
