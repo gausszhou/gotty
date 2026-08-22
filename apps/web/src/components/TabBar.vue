@@ -2,7 +2,7 @@
   <div class="tab-bar">
     <!-- 新建会话(固定在左侧) -->
     <div class="tab-actions tab-actions-left">
-      <button class="icon-btn" title="新建会话" @click="create">＋</button>
+      <button class="icon-btn" :title="t('tab.new')" @click="create">＋</button>
     </div>
     <div
       v-for="item in displayList"
@@ -13,22 +13,27 @@
     >
       <span class="state-dot" :class="stateClass(item.session)"></span>
       <span class="tab-title">{{ item.title }}</span>
-      <button class="tab-close" title="销毁会话" @click.stop="destroy(item.session)">✕</button>
+      <button class="tab-close" :title="t('tab.destroy')" @click.stop="destroy(item.session)">✕</button>
     </div>
 
-    <!-- 右侧:网络状态 + 主题切换 -->
+    <!-- 右侧:网络状态 + 语言/主题切换 -->
     <div class="tab-actions">
       <div
         v-if="latency != null"
         class="net-status"
         :class="netClass"
-        :title="'往返延迟(RTT),每 ' + PING_PERIOD_S + ' 秒刷新'"
+        :title="t('tab.latency')"
       >
         {{ latency }}ms
       </div>
       <button
         class="icon-btn"
-        :title="theme === 'light' ? '切换到暗色主题' : '切换到亮色主题'"
+        :title="t('lang.toggle')"
+        @click="toggleLang"
+      >{{ lang === 'zh' ? 'EN' : '中' }}</button>
+      <button
+        class="icon-btn"
+        :title="theme === 'light' ? t('theme.toLight') : t('theme.toDark')"
         @click="toggle"
       >{{ theme === 'light' ? '☾' : '☀' }}</button>
     </div>
@@ -39,6 +44,7 @@
 import { computed } from 'vue'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
+import { lang, toggleLang, t } from '../utils/i18n'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
@@ -54,9 +60,6 @@ const props = defineProps<{
     // 当前激活会话的实测 RTT(毫秒),展示在标题栏(顶部栏)右侧,颜色按延迟分级。
     latency?: number | null
 }>()
-
-// 与 ws.ts 的心跳周期保持一致,用于提示"延迟刷新率"
-const PING_PERIOD_S = 2
 
 // 延迟颜色分级:绿(<30ms) / 黄(30~100ms) / 红(≥100ms)
 const netClass = computed(() => {

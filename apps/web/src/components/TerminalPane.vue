@@ -11,15 +11,15 @@
       @contextmenu.prevent.stop
     >
       <div class="vsc-dialog">
-        <div class="dialog-title">{{ connState === 'gone' ? '会话已销毁' : '连接已断开' }}</div>
+        <div class="dialog-title">{{ connState === 'gone' ? t('dialog.gone') : t('dialog.lost') }}</div>
         <div class="dialog-message">{{ overlayMessage }}</div>
         <div class="dialog-actions">
           <button
             v-if="connState === 'disconnected'"
             class="btn-primary"
             @click="reconnect"
-          >重新连接</button>
-          <button class="btn-secondary" @click="close">关闭</button>
+          > {{ t('dialog.reconnect') }}</button>
+          <button class="btn-secondary" @click="close">{{ t('dialog.close') }}</button>
         </div>
       </div>
     </div>
@@ -32,6 +32,7 @@ import Terminal from './Terminal.vue'
 import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
 import { getSession, createSession } from '../utils/api'
 import { currentTheme } from '../utils/theme'
+import { t } from '../utils/i18n'
 import { findManifestEntry, upsertManifest } from '../utils/manifest'
 import { logger } from '../utils/logger'
 
@@ -119,7 +120,7 @@ function attach() {
         if (sid === null) {
             logger.warn('attach', 'session gone (session=%s)', props.sessionId)
             connState.value = 'gone'
-            overlayMessage.value = '该会话已被销毁或不存在'
+            overlayMessage.value = t('dialog.goneMsg')
             emit('latency', null)
             return
         }
@@ -139,7 +140,7 @@ function attach() {
             onGone: () => {
                 logger.warn('attach', 'gone (session=%s)', props.sessionId)
                 connState.value = 'gone'
-                overlayMessage.value = '该会话已被销毁或不存在'
+                overlayMessage.value = t('dialog.goneMsg')
                 emit('latency', null)
             },
             onLatency: (ms) => emit('latency', ms),

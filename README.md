@@ -12,6 +12,7 @@ WebSocket, with REST API based session management.
 - **Reconnection** — a session's process keeps running while its client is disconnected; the client can rejoin the same session.
 - **Binary WebSocket protocol** — terminal streams are transferred as raw bytes (no base64 overhead).
 - **Modern frontend** — Vite + Vue 3 + xterm.js with WebGL rendering.
+- **i18n UI** — interface follows the browser language (中文/English), with a manual toggle in the tab bar; the choice is remembered.
 
 # Installation
 

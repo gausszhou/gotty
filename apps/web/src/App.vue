@@ -33,13 +33,13 @@
         <!-- boot 进行中:显示连接占位,避免"创建终端会话"卡片一闪而过 -->
         <div v-else-if="booting" class="empty-loading">
           <span class="spinner" aria-hidden="true"></span>
-          <span class="empty-loading-text">正在连接…</span>
+          <span class="empty-loading-text">{{ t('empty.loading') }}</span>
         </div>
         <!-- 空态:居中小卡片(仅当确认没有可打开的会话时),点击直接创建终端会话 -->
         <button v-else class="empty-card" @click="createNewSession">
           <span class="empty-card-icon">＋</span>
-          <span class="empty-card-title">创建终端会话</span>
-          <span class="empty-card-hint">点击新建一个终端</span>
+          <span class="empty-card-title">{{ t('empty.title') }}</span>
+          <span class="empty-card-hint">{{ t('empty.hint') }}</span>
         </button>
       </div>
     </div>
@@ -52,6 +52,7 @@ import TabBar from './components/TabBar.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import { createSession, checkSessions, type SessionInfo } from './utils/api'
 import { currentTheme, toggleTheme, type Theme } from './utils/theme'
+import { t } from './utils/i18n'
 import {
     loadManifest, upsertManifest, touchManifest, removeFromManifest, generateSessionID, findManifestEntry,
     type ManifestEntry,
