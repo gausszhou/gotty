@@ -77,18 +77,14 @@ don't need to fight the terminal meaning of `Ctrl+C`/`Ctrl+V`:
 
 ## Theme & Terminal Colors
 
-The dark/light theme chosen on the page is pushed into the terminal so that
-programs inside render for the actual background:
-
-- Every session's PTY is launched with `COLORTERM=truecolor` and
-  `COLORFGBG=<fg>;<bg>` (rxvt convention): `15;0` (white on black) for the
-  dark theme, `0;15` (black on white) for the light theme. The theme of the
-  device creating the session is sent as `"theme": "dark"|"light"` in
-  `POST /api/sessions` and translated server-side; explicit `COLORTERM=` /
-  `COLORFGBG=` entries in the `env` config override the defaults.
-- Live color queries (`OSC 10/11 ; ?`) are answered by xterm.js with the
-  current theme colors, so programs that ask (vim/neovim's background
-  detection, tmux) adapt on their own — no extra configuration needed.
+The dark/light theme switch is purely client-side: CSS variables plus the
+xterm.js palette (`Terminal.options.theme`) update immediately — the page
+and the terminal renderer stay in sync. Sessions are launched with
+`COLORTERM=truecolor` (24-bit color support for TUIs like neovim, lazygit,
+fzf), and live color queries (`OSC 10/11 ; ?`) are answered by xterm.js
+with the current theme colors, so programs that ask on startup (vim/neovim
+background detection) pick colors that match. The theme is **not** pushed
+into the PTY at runtime; programs already running keep their own colors.
 
 ## Options
 
@@ -306,7 +302,7 @@ frame required). Messages are binary frames of the form
 | `0x33` ('3') | ResizeTerminal (JSON) | SetWindowTitle (string) |
 | `0x34` ('4') | — | SetPreferences (JSON) |
 | `0x35` ('5') | — | SetReconnect (JSON) |
-| `0x36` ('6') | — | SetReplayDone (empty; sent once after the attach-time replay, gates client input forwarding) |
+| `0x36` ('6') | — | SetReplayDone (empty handshake marker after the attach-time init frames; gates client input forwarding) |
 
 ## Development
 

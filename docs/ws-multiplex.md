@@ -49,7 +49,7 @@
 | 会话级 | `'3'` (0x33) | C→S / S→C | JSON / 字符串 | ResizeTerminal / SetWindowTitle |
 | 会话级 | `'4'` (0x34) | S→C | JSON | SetPreferences |
 | 会话级 | `'5'` (0x35) | S→C | JSON | SetReconnect |
-| 会话级 | `'6'` (0x36) | S→C | — | SetReplayDone（附着后历史输出重放结束，客户端据此开启输入上行） |
+| 会话级 | `'6'` (0x36) | S→C | — | SetReplayDone（附着时输出尾部重放结束的握手标记，客户端据此开启输入上行） |
 
 > 旧单会话协议中"会话由 URL `?session_id=` 指定"的语义取消，改为
 > Attach 帧显式声明。其余消息类型字节与旧协议完全一致，会话层编解码

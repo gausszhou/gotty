@@ -242,8 +242,8 @@ const (
 
 ```json
 // POST /api/sessions —— 客户端生成 id(幂等/复活;201 新建,200 幂等命中)
-// Request(theme 为创建设备的页面深浅色,dark/light,决定 PTY 的 COLORFGBG):
-{ "id": "abc123abc123abca", "command": "bash", "args": [], "width": 80, "height": 24, "theme": "light" }
+// Request(width/height 为可选的初始终端尺寸):
+{ "id": "abc123abc123abca", "command": "bash", "args": [], "width": 80, "height": 24 }
 
 // Response:
 {
@@ -265,16 +265,13 @@ const (
 }
 ```
 
-> 主题与终端配色:页面亮/暗主题不仅驱动 CSS 变量与 xterm 配色,还会
-> 传播进 PTY 进程,让会话内程序按实际背景渲染——
-> ① 每个会话启动时注入 `COLORTERM=truecolor`(neovim/lazygit 等据此开启
-> 24-bit 真彩)与 `COLORFGBG`(rxvt 惯例 `前景;背景`:深色 `15;0`、浅色
-> `0;15`;浅色由创建请求的 `theme` 字段映射,未传/未知一律深色);
-> ② 运行期程序主动查询背景(`OSC 10/11 ; ?`,如 vim 的 `t_RB`、tmux
-> 背景检测)时,由 xterm.js 用当前 theme 应答 `rgb:...`,经 WS 双向桥接
-> 天然可用。`buildEnv` 剥离继承的 `TERM/COLORTERM/COLORFGBG` 并统一注入
-> 默认值;`env` 配置中的同名条目可覆盖默认,客户端主题的 `COLORFGBG`
-> 因位于 base 选项之后而优先于服务端配置。
+> 主题与终端配色:页面亮/暗主题仅驱动前端 CSS 变量与 xterm 配色
+> (`Terminal.options.theme`),不向 PTY 同步;会话启动注入
+> `COLORTERM=truecolor`(neovim/lazygit 等据此开启 24-bit 真彩),程序
+> 主动查询背景(`OSC 10/11 ; ?`,如 vim 的 `t_RB`、tmux 背景检测)时,
+> 由 xterm.js 用当前 theme 应答 `rgb:...`,经 WS 双向桥接天然可用。
+> `buildEnv` 剥离继承的 `TERM/COLORTERM` 并统一注入默认值;`env`
+> 配置中的同名条目可覆盖默认。
 
 ---
 
@@ -302,6 +299,7 @@ WebSocket 使用 BinaryMessage 帧，终端输出直接传输原始字节（无 
   0x33 ('3') + string        SetWindowTitle
   0x34 ('4') + JSON bytes    SetPreferences
   0x35 ('5') + JSON bytes    SetReconnect
+  0x36 ('6')                 SetReplayDone（输出尾部重放结束,客户端开启输入上行)
 ```
 
 ### 6.3 握手
@@ -334,6 +332,10 @@ WebSocket 使用 BinaryMessage 帧，终端输出直接传输原始字节（无 
     │                              │
     │── WS 重连 ──────────────────→│ session.Attach()
     │                              │   新桥接，同一个 PTY
+    │◄── 尾部输出重放 ────────────│   最近 256KB 输出,恢复刷新前画面
+    │◄── [0x36] 握手标记 ─────────│   输入上行开启
+    │                              │   恢复会话时:r-1→r 尺寸抖动发
+    │                              │   SIGWINCH,前台程序整帧重绘收敛
     │◄── 继续输出 ────────────────│
 ```
 
