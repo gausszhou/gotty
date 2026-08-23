@@ -401,7 +401,11 @@ func (s *Session) replayOutput(conn io.Writer, data []byte) error {
 		return nil
 	}
 	if len(data) > attachReplayTailBytes {
-		data = data[len(data)-attachReplayTailBytes:]
+		// 切尾只取最近 attachReplayTailBytes,并把起点对齐到安全边界:
+		// 直接截断会把转义序列(OSC/CSI/DCS)拦腰切开,其载荷会被 xterm
+		// 当普通文本显示 —— 退出 TUI(opencode 等)后刷新,屏上出现
+		// "10;rgb:...""1R10..." 这类乱码。见 alignTailStart。
+		data = data[alignTailStart(data, len(data)-attachReplayTailBytes):]
 	}
 
 	const chunk = 32 * 1024
@@ -417,6 +421,31 @@ func (s *Session) replayOutput(conn io.Writer, data []byte) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+// alignTailStart moves the tail-cut start to a safe byte boundary:
+//
+//   - UTF-8 continuation bytes at the start are skipped, so a multi-byte
+//     character cut in half never shows as a corrupted glyph;
+//   - when the start is inside (or right after) an escape sequence, it
+//     rewinds to the nearest ESC (0x1b, within 1KB): xterm then parses
+//     the sequence from its head — its payload (OSC colors, CSI
+//     responses, DCS data) is consumed silently instead of being echoed
+//     as garbage text. Sequences whose terminator lies beyond the tail
+//     end stay in "collecting" state and never render either.
+func alignTailStart(b []byte, start int) int {
+	if start >= len(b) {
+		return start
+	}
+	for start < len(b) && b[start]&0xC0 == 0x80 {
+		start++ // 跳过被切开的 UTF-8 续字节(丢弃半个字符而非显示乱码)
+	}
+	for i := start - 1; i >= 0 && start-i <= 1024; i-- {
+		if b[i] == 0x1b {
+			return i
+		}
+	}
+	return start
 }
 
 // jitterSize nudges the PTY size (rows-1 → rows), each jump sending a real

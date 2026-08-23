@@ -261,6 +261,46 @@ func TestAttachIgnoresTinyResize(t *testing.T) {
 // TestAttachHandshakeEmitsReplayDone verifies the handshake marker is sent
 // right after the init frames (there is nothing to replay on a fresh
 // session): the client keys input forwarding off it.
+// TestAlignTailStartCutsEscapeSequences: 尾部重放的起点若落在转义序列
+// 中间,对齐后会回退到最近的 ESC —— 否则 OSC/CSI 的载荷(颜色、应答)
+// 会被 xterm 当普通文本显示(退出 TUI 后刷新看到的乱码)。
+func TestAlignTailStartCutsEscapeSequences(t *testing.T) {
+	// opencode 退出时的典型输出:OSC 10/11 颜色 + OSC 4 调色板 + CSI 应答
+	data := []byte("gauss@host:~$ opencode\r\n" +
+		"\x1b]10;rgb:cccc/cccc/cccc\x1b\\" +
+		"\x1b]11;rgb:0000/0000/0000\x1b\\" +
+		"\x1b[1;1R" +
+		"tail body\r\n")
+
+	// 起点切在第一个 OSC 的载荷中间("10;rgb:...")
+	mid := bytes.Index(data, []byte("]10;rgb:"))
+	start := alignTailStart(data, mid+1) // '10;rgb:...' 开头
+	if start > mid {
+		t.Fatalf("start %d did not rewind to the escape (payload at %d)", start, mid)
+	}
+	if data[start] != 0x1b {
+		t.Fatalf("aligned start must be ESC, got 0x%02x", data[start])
+	}
+
+	// 起点切在不含转义的纯文本行中间(首行,前面无 ESC):保持不动
+	hPos := bytes.IndexByte(data, 'h') // "host" 处,前面是普通文本
+	start = alignTailStart(data, hPos)
+	if start != hPos {
+		t.Fatalf("plain-text start must be kept, got %d want %d", start, hPos)
+	}
+}
+
+// TestAlignTailStartSkipsUtf8Continuation: 多字节字符被切开时,丢弃
+// 起始的续字节,不显示半个字。
+func TestAlignTailStartSkipsUtf8Continuation(t *testing.T) {
+	data := []byte("ok \xf0\x9f\x98\x80 end") // 😀 U+1F600 的多字节
+	// 起点从 '9f' 开始(续字节) → 跳到字符结束后的 ' end'
+	start := alignTailStart(data, bytes.IndexByte(data, 0x9f))
+	if data[start] != ' ' {
+		t.Fatalf("expected skip to the byte after the cut character, got 0x%02x at %d", data[start], start)
+	}
+}
+
 func TestAttachHandshakeEmitsReplayDone(t *testing.T) {
 	factory, stub := stubFactory()
 	m := NewManager(WithTerminalFactory(factory))
