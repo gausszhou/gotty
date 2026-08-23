@@ -1,6 +1,6 @@
 # GoTTY - Web 终端,端到端驱动
 
-**[English](README.md)**
+【[English](README.md) | **简体中文**】
 
 GoTTY 是一个命令行工具,把你的 CLI 工具跑在**浏览器托管的终端**里:会话
 通过 REST API 创建、经 WebSocket 附着,在页面里以页签管理;`gotty capture`
