@@ -81,16 +81,20 @@ type Terminal interface {
 	WindowTitleVariables() map[string]interface{}
 }
 
-// outputRingCapacity bounds the per-session replay buffer kept for
-// reconnecting clients.
-//
-// 4MB 而非 128KB:重放的是原始字节流,它的隐式终端状态(备用屏进出、
-// 光标、已入镜的转义序列)必须与 PTY 真实状态一致才有意义。128KB 在
-// 一次实质性的 TUI 会话(opencode/懒加载滚动/长输出)中极易回绕,
-// 把较早的 `ESC[?1049h`(进入备用屏)挤出缓冲 —— 刷新后回放失去备用屏
-// 入口,程序退出时的 `ESC[?1049l` 变成空操作,画面残留无法清除。
-// 4MB 使正常会话几乎不可能回绕,回放保持自洽。
+// outputRingCapacity bounds the per-session output buffer kept for the
+// attach-time screen restore (see attachReplayTailBytes). 4MB keeps the
+// tail slice inside a self-consistent window for essentially any session.
 const outputRingCapacity = 4 * 1024 * 1024
+
+// attachReplayTailBytes is how much of the recent output a fresh attach
+// replays so the client sees the pre-refresh screen instead of a blank
+// terminal. It is a small tail (a few thousand lines), NOT the whole
+// history: replaying megabytes scrolls the page frantically and, once the
+// ring has wrapped, starts at an arbitrary byte that no longer reconstructs
+// the terminal state. A short tail renders instantly, and xterm tolerates
+// a cut-in sequence (dropped escape); full-screen programs redraw anyway
+// on the attach-time SIGWINCH, and the shell prompt is inside the tail.
+const attachReplayTailBytes = 256 * 1024
 
 // Session is one terminal process with its lifecycle state.
 // A Session is safe for concurrent use.
@@ -116,13 +120,18 @@ type Session struct {
 	// replaySeq is the value of total captured when the current attach
 	// took its replay snapshot. The pump delivers a chunk live only when
 	// its start sequence is >= replaySeq (i.e. the chunk is not part of
-	// the replay that was just sent to this client).
+	// the tail that was just replayed to this client).
 	replaySeq int64
 
-	// out keeps the most recent terminal output so that a later attach
-	// can replay it (the client screen would otherwise stay blank until
-	// the process produces new output).
+	// out keeps the most recent terminal output so that a fresh attach
+	// can replay its tail (the client screen would otherwise stay blank
+	// until the process produces new output).
 	out *ring
+
+	// lastCols/lastRows remember the most recent successful resize, used
+	// to jitter the PTY size when a restored attach replays history (see
+	// jitterSize). Zero means the terminal was never resized.
+	lastCols, lastRows int
 
 	// termExited is closed by outputPump once reading the PTY fails,
 	// i.e. the terminal process has gone away.
@@ -315,12 +324,10 @@ func (s *Session) LastTouched() time.Time {
 
 // bridge pumps bytes in both directions.
 func (s *Session) bridge(ctx context.Context, conn io.ReadWriter, opts AttachOptions) error {
-	// Take the replay snapshot and raise the delivery boundary BEFORE
-	// anything live can reach this client. outMu makes the snapshot,
-	// the boundary and the pump's ring writes atomic relative to each
-	// other: bytes recorded before the snapshot are replayed here and
-	// skipped by the pump; bytes recorded after are delivered by the
-	// pump. Either way nothing is duplicated or lost.
+	// 刷新/重连时重放最近一段输出(attachReplayTailBytes),让新客户端
+	// 看到刷新前的画面而不是空白终端。只重放尾部——全量重放会疯狂
+	// 滚动,且环形回绕后从任意字节开始,无法重建终端状态(画面拼错)。
+	// 备用屏(全屏程序)场景由客户端首个 resize 的 SIGWINCH 整帧重绘兜底。
 	s.outMu.Lock()
 	s.replaySeq = s.total
 	snapshot := s.out.Bytes()
@@ -332,12 +339,18 @@ func (s *Session) bridge(ctx context.Context, conn io.ReadWriter, opts AttachOpt
 	if err := s.replayOutput(conn, snapshot); err != nil {
 		return err
 	}
-	// 回放完成标记:客户端收到它之后才允许上行输入。回放字节流里带着
-	// 程序启动时的终端查询(DSR/DECRQM/OSC),新 xterm 会为它们自动生成
-	// 应答;这些应答若被写回 PTY,等于向一个早已不等待的程序注入陈旧
-	// 且位置错误的数据。见 apps/web/src/utils/ws.ts 的输入静默。
+	// 握手完成标记:客户端收到它之后才允许上行输入。新 xterm 会对自身
+	// 生成的终端查询(DSR/DECRQM/OSC)自动应答;在输入上行开启前这些应答
+	// 被静默丢弃,不会写回 PTY。见 apps/web/src/utils/ws.ts 的输入静默。
 	if _, err := conn.Write(terminal.EncodeReplayDone()); err != nil {
 		return err
+	}
+	// 恢复历史会话(重放了非空输出尾部):重放只是字节回放,画面可能与
+	// 程序真实状态不一致(备用屏入口丢失/半帧/旧几何)。补一次真实
+	// TIOCSWINSZ 抖动向 PTY 前台进程组发 SIGWINCH,让前台程序整帧重绘,
+	// 画面与真实状态收敛。新会话(ring 为空)不抖,避免打扰程序启动。
+	if len(snapshot) > 0 {
+		s.jitterSize()
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -377,11 +390,18 @@ func (s *Session) sendInitializeMessage(conn io.ReadWriter, opts AttachOptions) 
 	return nil
 }
 
-// replayOutput sends a pre-captured snapshot of the session output
-// (from bridge) as output frames.
+// replayOutput sends the tail of a pre-captured output snapshot (from
+// bridge) as output frames, capped at attachReplayTailBytes — enough to
+// restore the screen the user saw before the refresh, without scrolling
+// through the whole history. A tail cut in the middle of an escape
+// sequence is tolerated by xterm (the partial sequence is dropped);
+// full-screen programs redraw on the attach-time SIGWINCH anyway.
 func (s *Session) replayOutput(conn io.Writer, data []byte) error {
 	if len(data) == 0 {
 		return nil
+	}
+	if len(data) > attachReplayTailBytes {
+		data = data[len(data)-attachReplayTailBytes:]
 	}
 
 	const chunk = 32 * 1024
@@ -399,8 +419,26 @@ func (s *Session) replayOutput(conn io.Writer, data []byte) error {
 	return nil
 }
 
+// jitterSize nudges the PTY size (rows-1 → rows), each jump sending a real
+// SIGWINCH to the foreground process group so the foreground program
+// redraws its whole frame. Manual SIGWINCH does not reach the program
+// through the shell; a real TIOCSWINSZ always does. Used after replaying
+// history to a restored attach so the tail picture converges with the
+// program's true state.
+func (s *Session) jitterSize() {
+	s.mu.Lock()
+	cols, rows := s.lastCols, s.lastRows
+	s.mu.Unlock()
+	if cols <= 1 || rows <= 1 {
+		return
+	}
+	if err := s.term.Resize(cols, rows-1); err == nil {
+		_ = s.term.Resize(cols, rows)
+	}
+}
+
 // outputPump is the session's single PTY reader, started once at session
-// creation. It feeds the replay ring and delivers output to the currently
+// creation. It feeds the output ring and delivers output to the currently
 // attached client (if any), so output is never lost or stolen between
 // attaches. It exits when the terminal closes.
 //
@@ -439,7 +477,7 @@ func (s *Session) outputPump() {
 			continue
 		}
 		if _, err := deliverTo.Write(terminal.EncodeOutput(buffer[:n])); err != nil {
-			// Client is gone; the next attach replays from the ring.
+			// Client is gone; the next attach replays the ring tail.
 			continue
 		}
 	}
@@ -489,9 +527,19 @@ func (s *Session) masterToSlave(ctx context.Context, conn io.ReadWriter, opts At
 			if err != nil {
 				return err
 			}
+			// 忽略"1 行"探测尺寸(任何客户端来源):FitAddon 在隐藏容器上
+			// 会钳出 rows=1,写进 PTY 会让会话永久只剩一行、无法向下。
+			// 真实尺寸(表达布局)的 resize 不会被误伤。
+			if args.Columns < 2 || args.Rows < 2 {
+				return nil
+			}
 			if err := s.term.Resize(args.Columns, args.Rows); err != nil {
 				return fmt.Errorf("failed to resize terminal: %w", err)
 			}
+			// 记录最近一次成功尺寸,供恢复会话时 jitterSize 使用。
+			s.mu.Lock()
+			s.lastCols, s.lastRows = args.Columns, args.Rows
+			s.mu.Unlock()
 			if firstResize {
 				firstResize = false
 				if args.Rows > 1 && args.Columns > 1 {

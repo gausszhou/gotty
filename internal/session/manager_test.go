@@ -386,7 +386,7 @@ func TestAttachProtocol(t *testing.T) {
 	if sess.State() != StateRunning {
 		t.Fatalf("unexpected state after preempt: %s", sess.State())
 	}
-	// 新客户端收到 init 帧 + 重放的历史输出
+	// 新客户端收到 init 帧 + 重放的输出尾部(刷新/重连恢复画面)
 	if frame := readFrame(t, outReader3); frame[0] != terminal.SetWindowTitle {
 		t.Fatalf("unexpected frame after preempt: `%c`", frame[0])
 	}
@@ -398,7 +398,7 @@ func TestAttachProtocol(t *testing.T) {
 	} else if string(frame[1:]) != "hello" {
 		t.Fatalf("unexpected replayed output after preempt: %q", frame[1:])
 	}
-	if frame := readFrame(t, outReader3); frame[0] != terminal.SetReplayDone {
+	if frame := readFrame(t, outReader3); len(frame) != 1 || frame[0] != terminal.SetReplayDone {
 		t.Fatalf("expected SetReplayDone after preempt replay, got type `%c`", frame[0])
 	}
 
@@ -424,15 +424,13 @@ func TestAttachProtocol(t *testing.T) {
 	if frame := readFrame(t, outReader2); frame[0] != terminal.SetReconnect {
 		t.Fatalf("unexpected reattach second frame type `%c`", frame[0])
 	}
-	// 9. the buffered output from earlier ("hello" written during the first
-	// attach) is replayed so the reattached client sees it immediately.
+	// 9. 重连同样重放输出尾部("hello"),让新客户端的画面立即恢复。
 	if frame := readFrame(t, outReader2); frame[0] != terminal.Output {
 		t.Fatalf("expected replayed Output frame, got type `%c`", frame[0])
 	} else if string(frame[1:]) != "hello" {
 		t.Fatalf("unexpected replayed output: %q", frame[1:])
 	}
-	// 回放完成标记:在重放输出之后
-	if frame := readFrame(t, outReader2); frame[0] != terminal.SetReplayDone {
+	if frame := readFrame(t, outReader2); len(frame) != 1 || frame[0] != terminal.SetReplayDone {
 		t.Fatalf("expected SetReplayDone after reattach replay, got type `%c`", frame[0])
 	}
 	inWriter2.Close()

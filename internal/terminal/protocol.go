@@ -35,11 +35,13 @@ const (
 	SetPreferences = '4'
 	// SetReconnect tells the client to reconnect after disconnection.
 	SetReconnect = '5'
-	// SetReplayDone is sent once after the attach-time replay of the
-	// output ring finishes. It tells the client that input forwarding
-	// may begin: answers xterm auto-generates for replayed terminal
-	// queries (DSR/DECRQM/OSC) must NOT be written back into the PTY —
-	// the program that issued them is gone or no longer waiting.
+	// SetReplayDone is sent right after the attach-time init frames. It is
+	// the handshake marker after which the client may forward input: xterm
+	// auto-generates answers for terminal queries (DSR/DECRQM/OSC) it sees
+	// in the output stream, and those answers must NOT be written back into
+	// the PTY — the program that issued the queries is not waiting for them.
+	// (Named for the historical attach-time output replay; the marker itself
+	// is still what gates input forwarding in the browser.)
 	SetReplayDone = '6'
 )
 

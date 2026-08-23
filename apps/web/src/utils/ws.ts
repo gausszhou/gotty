@@ -10,13 +10,13 @@ const MSG_INPUT = 0x31 // '1'
 const MSG_PING = 0x32 // '2'
 const MSG_RESIZE = 0x33 // '3'
 
-// 服务端(→客户端):输出 / 心跳回应 / 窗口标题 / 偏好 / 重连秒数 / 回放完成
+// 服务端(→客户端):输出 / 心跳回应 / 窗口标题 / 偏好 / 重连秒数 / 握手完成
 const MSG_OUTPUT = 0x31
 const MSG_PONG = 0x32
 const MSG_WINDOW_TITLE = 0x33
 const MSG_PREFERENCES = 0x34
 const MSG_RECONNECT = 0x35
-const MSG_REPLAY_DONE = 0x36
+const MSG_REPLAY_DONE = 0x36 // 历史重放已移除;该帧仍是"输入可上行"握手标记
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -77,13 +77,12 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
     // xterm 的 onData/onResize 是累加事件:每次 connect 若重新注册,
     // 重连后一次按键会发送多次输入 → 输入输出重复。只注册一次。
     let inputBound = false
-    // 输入上行开关:回放期间关闭。回放字节流里带着程序启动时的终端查询
-    // (DSR/DECRQM/OSC),xterm.js 会为它们自动生成应答并经 onData 上行;
-    // 若写回 PTY,等于向早已不等待的程序注入陈旧应答。收到服务端
-    // MSG_REPLAY_DONE 后才开启;REPLAY_GATE_MAX_MS 封顶兜底 —— 大回放
-    // (MB 级)在慢网下传输超过该时限时,查询都在回放头部(程序启动处)、
-    // 早已被解析丢弃,尾部再出现查询的几率极低,允许放开输入避免
-    // 键入/粘贴长时间失效(查询头在 ring 头部,先到先弃)。
+    // 输入上行开关:attach 握手完成前关闭。xterm 会对流中出现的终端
+    // 查询(DSR/DECRQM/OSC)自动生成应答并经 onData 上行;若在握手完成前
+    // 写回 PTY,等于向并不等待的程序注入陈旧应答。收到服务端
+    // MSG_REPLAY_DONE 后才开启;REPLAY_GATE_MAX_MS 封顶兜底 —— 慢网/大
+    // 输出下若该帧迟迟未到,查询早已过时,允许放开输入避免键入/粘贴
+    // 长时间失效。
     let inputEnabled = false
     const REPLAY_GATE_MAX_MS = 2000
     let gateTimer: ReturnType<typeof setTimeout> | null = null
@@ -174,7 +173,7 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                     reconnectSeconds = Number(decoder.decode(payload))
                     break
                 case MSG_REPLAY_DONE:
-                    // 回放结束:开启输入上行(回放期 xterm 自动应答被丢弃),
+                    // 握手完成:开启输入上行(此前 xterm 自动应答被丢弃),
                     // 并取消兜底计时器(若已触发则输入已开启,幂等无害)
                     if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
                     inputEnabled = true
