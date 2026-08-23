@@ -96,7 +96,7 @@ onMounted(() => {
     window.addEventListener('resize', resizeHandler)
   })
 
-  // 跟随亮/暗主题,动态切换 xterm 内部的配色
+  // 跟随亮/暗主题,动态切换 xterm 内部的配色(纯渲染层;不向 PTY 同步)
   unsubscribeTheme = onThemeChange((theme) => {
     term.options.theme = terminalTheme(theme)
   })
@@ -146,6 +146,12 @@ function reset() {
   term?.clear()
 }
 
+// focus 把键盘焦点交给 xterm 的输入区;激活/创建会话后由上层调用,
+// 让用户无需点击终端即可直接输入。
+function focus() {
+  term?.focus()
+}
+
 function deactivate() {
   term?.blur()
 }
@@ -162,6 +168,7 @@ defineExpose({
   onInput,
   onResize,
   reset,
+  focus,
   deactivate,
   fit,
   close,

@@ -163,17 +163,32 @@ function close() {
     emit('close')
 }
 
-onMounted(attach)
+onMounted(() => {
+    attach()
+    // 新建会话的 pane 挂载即激活:props.active 初始为 true,下方 watcher
+    // 只在值变化时回调,不会触发;这里补一次 fit + 聚焦(子 Terminal
+    // 已 open,光标直接落到新终端,无需点击)。
+    if (props.active) {
+        requestAnimationFrame(() => {
+            terminalRef.value?.fit()
+            terminalRef.value?.focus()
+        })
+    }
+})
 
 // 连接状态变化 → 上报上层(页签圆点即时变色)
 watch(connState, (v) => emit('conn', v === 'connected'))
 
-// v-show 从隐藏切回可见时,容器尺寸恢复,重新 fit 终端
+// v-show 从隐藏切回可见时,容器尺寸恢复,重新 fit 终端;
+// 同时把键盘焦点交给 xterm —— 新建/切换会话后无需点击即可直接输入。
 watch(
     () => props.active,
     (visible) => {
         if (visible) {
-            requestAnimationFrame(() => terminalRef.value?.fit())
+            requestAnimationFrame(() => {
+                terminalRef.value?.fit()
+                terminalRef.value?.focus()
+            })
         }
     },
 )
