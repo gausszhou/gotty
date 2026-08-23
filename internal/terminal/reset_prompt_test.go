@@ -7,9 +7,13 @@ import (
 )
 
 // TestTerminal_ResetSequenceOnPrompt 验证 bash 会话通过 PROMPT_COMMAND
-// 在每个提示符前发送终端模式复位序列:离开备用屏(?1049l)、鼠标模式
+// 在每个提示符前发送终端模式复位序列:鼠标模式
 // (?1000l/?1002l/?1003l/?1006l)、显示光标(25h)、关闭括号粘贴(?2004l),
 // 防止 TUI 退出/被杀后残留画面、鼠标字节乱码与隐藏光标。
+//
+// 注意:不发送 ?1049l(离开备用屏)——bash 从不会进入备用屏,该序列会被
+// xterm.js 当作"切回主屏并恢复光标"处理,把光标拽到已保存位置,导致
+// 新提示符画在历史输出行上(ls 后"提示符+文件行"拼接错乱)。
 //
 // 注意:清理只关闭 PTY 不强等进程回收(go test 环境对 bash 的
 // SIGHUP→Wait 回收有异常;生产路径(独立进程)已验证正常)。
@@ -26,9 +30,13 @@ func TestTerminal_ResetSequenceOnPrompt(t *testing.T) {
 	})
 
 	got := collectOutput(term, 5*time.Second)
-	reset := "\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?2004l"
+	reset := "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?2004l"
 	if !bytes.Contains(got, []byte(reset)) {
 		t.Fatalf("prompt reset sequence not found in bash output: %q",
+			truncate(got, 300))
+	}
+	if bytes.Contains(got, []byte("\x1b[?1049l")) {
+		t.Fatalf("prompt reset must NOT leave the alternate screen: %q",
 			truncate(got, 300))
 	}
 }
