@@ -22,21 +22,6 @@ type createSessionRequest struct {
 	Args    []string `json:"args"`
 	Width   int      `json:"width"`
 	Height  int      `json:"height"`
-	// Theme is the lighting of the creating device's page ("dark"|"light").
-	// It is translated into the COLORFGBG env var of the PTY so that
-	// programs inside (screen, vifm, …) render for the actual background.
-	// Empty or unknown values fall back to the dark default.
-	Theme string `json:"theme"`
-}
-
-// themeColorFgBg maps a page theme to the rxvt COLORFGBG value
-// (foreground;background ANSI indices). Light = black on white,
-// anything else (dark/unset) = white on black.
-func themeColorFgBg(theme string) string {
-	if theme == "light" {
-		return "0;15"
-	}
-	return "15;0"
 }
 
 type sessionStatusResponse struct {
@@ -74,12 +59,6 @@ func (server *Server) handleCreateSession(w http.ResponseWriter, r *http.Request
 	if req.Width > 0 && req.Height > 0 {
 		termOpts = append(termOpts, terminal.WithInitialSize(req.Width, req.Height))
 	}
-	// 客户端主题决定 PTY 的 COLORFGBG(浅色 0;15 / 深色 15;0)。
-	// 放在 base 选项之后 → colorFgBg 覆盖服务端配置 env 中的 COLORFGBG,
-	// 因为只有客户端知道页面此刻实际渲染的深浅背景。
-	termOpts = append(termOpts, terminal.WithEnv([]string{
-		"COLORFGBG=" + themeColorFgBg(req.Theme),
-	}))
 
 	sess, created, err := server.manager.CreateWithID(req.ID, command, args, termOpts...)
 	if err != nil {

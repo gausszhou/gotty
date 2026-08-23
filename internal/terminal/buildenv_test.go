@@ -27,12 +27,10 @@ func envHas(t *testing.T, env []string, key string) bool {
 }
 
 // TestBuildEnvDefaults 验证默认注入:TERM=xterm-256color、
-// COLORTERM=truecolor、COLORFGBG=15;0(深色),且继承环境中
-// 的颜色变量被剥离统一为本层默认值。
+// COLORTERM=truecolor,且继承环境中的颜色变量被剥离统一为本层默认值。
 func TestBuildEnvDefaults(t *testing.T) {
 	t.Setenv("TERM", "vt100")
 	t.Setenv("COLORTERM", "1")
-	t.Setenv("COLORFGBG", "7;0")
 	t.Setenv("UNRELATED", "keep-me")
 
 	env := buildEnv("/bin/bash", nil)
@@ -43,9 +41,6 @@ func TestBuildEnvDefaults(t *testing.T) {
 	if got := envValue(t, env, "COLORTERM"); got != "truecolor" {
 		t.Fatalf("COLORTERM = %q, want truecolor", got)
 	}
-	if got := envValue(t, env, "COLORFGBG"); got != "15;0" {
-		t.Fatalf("COLORFGBG = %q, want 15;0 (dark)", got)
-	}
 	if envValue(t, env, "UNRELATED") != "keep-me" {
 		t.Fatal("unrelated inherited variable must be preserved")
 	}
@@ -54,34 +49,26 @@ func TestBuildEnvDefaults(t *testing.T) {
 	}
 }
 
-// TestBuildEnvThemeOverride 验证 extras 中的 COLORFGBG/COLORTERM
-// 覆盖默认值(浅色会话由服务端经 WithEnv 注入 "COLORFGBG=0;15")。
-func TestBuildEnvThemeOverride(t *testing.T) {
-	t.Setenv("COLORFGBG", "15;0")
-
+// TestBuildEnvOverride 验证 extras 中的 COLORTERM 可覆盖默认值。
+func TestBuildEnvOverride(t *testing.T) {
 	env := buildEnv("/bin/sh", []string{
-		"COLORFGBG=0;15", // 浅色(黑字白底)
 		"COLORTERM=24bit",
 	})
 
-	if got := envValue(t, env, "COLORFGBG"); got != "0;15" {
-		t.Fatalf("COLORFGBG = %q, want 0;15 (light)", got)
-	}
 	if got := envValue(t, env, "COLORTERM"); got != "24bit" {
 		t.Fatalf("COLORTERM = %q, want 24bit", got)
 	}
 }
 
-// TestBuildEnvLaterOverrideWins 验证多个同类条目按序后者胜(服务端
-// base 配置 env 在前、客户端主题 env 在后 → 主题优先)。
+// TestBuildEnvLaterOverrideWins 验证多个同类条目按序后者胜。
 func TestBuildEnvLaterOverrideWins(t *testing.T) {
 	env := buildEnv("/bin/sh", []string{
-		"COLORFGBG=15;0",
-		"COLORFGBG=0;15",
+		"COLORTERM=24bit",
+		"COLORTERM=truecolor",
 	})
 
-	if got := envValue(t, env, "COLORFGBG"); got != "0;15" {
-		t.Fatalf("COLORFGBG = %q, want the later value 0;15", got)
+	if got := envValue(t, env, "COLORTERM"); got != "truecolor" {
+		t.Fatalf("COLORTERM = %q, want the later value truecolor", got)
 	}
 }
 

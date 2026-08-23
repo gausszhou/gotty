@@ -107,7 +107,7 @@ function onTabTitle(sessionId: string, title: string) {
 async function createNewSession() {
     logger.info('app', 'create new session (default command)')
     const id = generateSessionID()
-    const s = await createSession('', [], id, theme.value)
+    const s = await createSession('', [], id)
     upsertManifest({
         id: s.id,
         command: s.command,
