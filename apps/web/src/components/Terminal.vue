@@ -142,6 +142,16 @@ function onResize(callback: (columns: number, rows: number) => void) {
   term?.onResize(({ cols, rows }) => callback(cols, rows))
 }
 
+// onWriteParsed 在 xterm 解析完一批写入后触发;返回退订函数。
+// ws.ts 用它把"输入上行"的开启推迟到重放字节全部解析完成之后:
+// 重放里的终端查询会触发 xterm 自动应答,若在解析完成前就放开上行,
+// 这些陈旧应答被写回 PTY,前台 shell 会把转义载荷显示成乱码。
+function onWriteParsed(callback: () => void): (() => void) | undefined {
+  if (!term) return undefined
+  const d = term.onWriteParsed(() => callback())
+  return () => d.dispose()
+}
+
 function reset() {
   term?.clear()
 }
@@ -167,6 +177,7 @@ defineExpose({
   setPreferences,
   onInput,
   onResize,
+  onWriteParsed,
   reset,
   focus,
   deactivate,

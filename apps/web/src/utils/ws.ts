@@ -30,6 +30,8 @@ export interface TermHandle {
     deactivate(): void
     onInput(callback: (input: string) => void): void
     onResize(callback: (columns: number, rows: number) => void): void
+    // 解析完成事件(返回退订函数):输入上行等待重放解析完再开启。
+    onWriteParsed(callback: () => void): (() => void) | undefined
 }
 
 export interface WSHooks {
@@ -87,17 +89,22 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
     // 输入上行开关:attach 握手完成前关闭。xterm 会对流中出现的终端
     // 查询(DSR/DECRQM/OSC)自动生成应答并经 onData 上行;若在握手完成前
     // 写回 PTY,等于向并不等待的程序注入陈旧应答。收到服务端
-    // MSG_REPLAY_DONE 后才开启;REPLAY_GATE_MAX_MS 封顶兜底 —— 慢网/大
-    // 输出下若该帧迟迟未到,查询早已过时,允许放开输入避免键入/粘贴
-    // 长时间失效。
+    // MSG_REPLAY_DONE 后仍不立即开启 —— xterm 对重放字节流的解析是
+    // 异步的,解析中生成的应答会在开启后才到达;这些陈旧应答写回 PTY
+    // 后,前台 shell 会把转义载荷显示成乱码(退出 opencode 后刷新所见
+    // 的 "10;rgb:..." "$y" 文本)。等重放解析完成(onWriteParsed)再
+    // 开启,REPLAY_GATE_MAX_MS 封顶兜底,避免长时间无法输入。
     let inputEnabled = false
     const REPLAY_GATE_MAX_MS = 2000
     let gateTimer: ReturnType<typeof setTimeout> | null = null
+    // 解析完成回调的退订;open 后即清理,防跨连接残留。
+    let parsedUnsub: (() => void) | null = null
 
     const clearTimers = () => {
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
         if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
+        if (parsedUnsub) { parsedUnsub(); parsedUnsub = null }
     }
 
     const connect = (sid: string) => {
@@ -182,10 +189,29 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                     reconnectSeconds = Number(decoder.decode(payload))
                     break
                 case MSG_REPLAY_DONE:
-                    // 握手完成:开启输入上行(此前 xterm 自动应答被丢弃),
-                    // 并取消兜底计时器(若已触发则输入已开启,幂等无害)
+                    // 重放字节已全部交给 xterm,但解析是异步的;解析过程中
+                    // xterm 对重放里的查询生成自动应答 —— 若此刻开启上行,
+                    // 这些陈旧应答会写回 PTY,前台 shell 把它们显示成乱码。
+                    // 等 onWriteParsed(重放解析完成)再开启;600ms 兜底防卡。
                     if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
-                    inputEnabled = true
+                    parsedUnsub?.()
+                    let opened = false
+                    const open = () => {
+                        if (opened) return
+                        opened = true
+                        inputEnabled = true
+                        parsedUnsub?.()
+                        parsedUnsub = null
+                    }
+                    parsedUnsub = term.onWriteParsed(open) ?? null
+                    gateTimer = setTimeout(() => {
+                        if (!opened) {
+                            inputEnabled = true
+                            opened = true
+                            parsedUnsub?.()
+                            parsedUnsub = null
+                        }
+                    }, 600)
                     break
             }
         }

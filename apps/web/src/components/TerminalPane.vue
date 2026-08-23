@@ -107,6 +107,7 @@ const termHandle: TermHandle = {
     deactivate: () => terminalRef.value!.deactivate(),
     onInput: (cb) => terminalRef.value!.onInput(cb),
     onResize: (cb) => terminalRef.value!.onResize(cb),
+    onWriteParsed: (cb) => terminalRef.value!.onWriteParsed(cb),
 }
 
 function attach() {
