@@ -1,6 +1,6 @@
 <template>
-  <!-- 右键 = 粘贴(替代浏览器上下文菜单),见 utils/clipboard.ts -->
-  <div ref="terminalEl" class="terminal-container" @contextmenu.prevent="onContextMenu"></div>
+  <!-- 不拦截右键:保留浏览器原生上下文菜单(复制/检查元素等) -->
+  <div ref="terminalEl" class="terminal-container"></div>
 </template>
 
 <script setup lang="ts">
@@ -11,7 +11,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { currentTheme, onThemeChange, type Theme } from '../utils/theme'
-import { useXTermClipboard, pasteFromClipboard, loadClipboardAddon } from '../utils/clipboard'
+import { useXTermClipboard, loadClipboardAddon } from '../utils/clipboard'
 
 const emit = defineEmits<{
     // 服务端 SetWindowTitle 帧;不再直接写 document.title,
@@ -108,13 +108,10 @@ onBeforeUnmount(() => {
   term?.dispose()
 })
 
-// onContextMenu:右键在终端区域内粘贴
-function onContextMenu() {
-    void pasteFromClipboard(term)
-}
-
-// fit 重新适配容器尺寸;v-show 隐藏后重新显示时必须调用
-// (隐藏时容器尺寸为 0,fit 结果无效)
+// fit 重新适配容器尺寸;v-show 隐藏后重新显示时必须调用(激活 watcher)。
+// 隐藏(v-show display:none)或未布局的容器高度为 0:FitAddon 会把 rows
+// 钳到 1 并 resize 出"1 行终端",该会话从此只剩一行、光标永远在第一行、
+// 无法向下 —— 因此零尺寸时跳过,等可见后再由上层 fit。
 function fit() {
   fitAddon?.fit()
 }

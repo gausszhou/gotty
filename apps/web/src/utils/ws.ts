@@ -65,6 +65,13 @@ export interface WSWrapper {
     reconnect(): void
 }
 
+// columns/rows 太小即视为"容器尚未就绪"的探测值(FitAddon 在隐藏
+// 容器上会把 rows 钳到 1):发出去会把 PTY 缩成 1 行,画面只剩一行、
+// 无法向下。过滤,等真实尺寸(激活后的 fit)再发。
+function saneSize(columns: number, rows: number): boolean {
+    return columns >= 2 && rows >= 2
+}
+
 // openTerminalWS 建立一条会话 WebSocket 并完成收发桥接。
 // 返回 { close, reconnect } 供组件在卸载/断开弹窗时调用。
 export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHooks = {}): WSWrapper {
@@ -126,13 +133,15 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                     if (inputEnabled && ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_INPUT, input))
                 })
                 term.onResize((columns, rows) => {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
+                    if (saneSize(columns, rows) && ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
                     }
                 })
             }
             const { columns, rows } = term.info()
-            sock.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
+            if (saneSize(columns, rows)) {
+                sock.send(encode(MSG_RESIZE, JSON.stringify({ columns, rows })))
+            }
 
             // 立即测一次延迟(不等第一个周期),之后每 2s 心跳保活 +
             // 刷新延迟/抖动指标(标题栏右侧展示)
