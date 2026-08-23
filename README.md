@@ -306,6 +306,7 @@ frame required). Messages are binary frames of the form
 | `0x33` ('3') | ResizeTerminal (JSON) | SetWindowTitle (string) |
 | `0x34` ('4') | — | SetPreferences (JSON) |
 | `0x35` ('5') | — | SetReconnect (JSON) |
+| `0x36` ('6') | — | SetReplayDone (empty; sent once after the attach-time replay, gates client input forwarding) |
 
 ## Development
 
