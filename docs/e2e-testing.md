@@ -66,6 +66,20 @@ const ws = new WebSocket(page.webSocketDebuggerUrl)
 
 临时探索脚本(未沉淀的)可放 `/tmp/cdp-*.mjs`,但**结论场景请沉淀回 `scripts/e2e/`**。
 
+### 3.4 README 截图录制(脚本化)
+
+`screenshot.gif` 由 `scripts/screenshot-record.mjs` 录制,不再是手工截屏:
+
+- 场景:空态卡片 → 创建 → `cd` + `ls` → ＋ 新建 → `echo` → 页签切换 → 销毁 → 刷新恢复(重附着逐像素复现)
+- 前置:新版服务 `./build/gotty serve --port 8081`;headless Chrome `--disable-webgl`
+  (无头环境第二个 WebGL 画布不绘制,禁用后回退 DOM 渲染器,两个终端都可见且
+  内容可经 `.xterm-rows` 断言);见脚本头部注释的完整启动命令。
+- 运行:`node scripts/screenshot-record.mjs --gif`(合成到 `screenshot.gif`,依赖 ImageMagick `magick`)
+- 录入的经验:无头 Chrome 逐字符 `Input.dispatchKeyEvent` 会被 xterm 误判
+  (小写 p–z → `~`),可打印字符须用 `Input.insertText`;`magick -layers Optimize`
+  会把帧延迟清零,`-delay` 必须放在输入文件之前。
+- 每个关键态做 **DOM 内容断言**(`.xterm-rows` 文本),失败即退出非 0。
+
 ## 4. 本仓库验证过的事实(可作断言基准)
 
 - 顶部栏 30px(`.tab-bar`),页签内圆点/标题/关闭按钮垂直中心均为 15px(三者对齐)——
