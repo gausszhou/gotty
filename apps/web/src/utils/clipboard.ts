@@ -3,8 +3,9 @@
 // 这里统一接管:
 //   - Ctrl+Shift+C / Cmd+C  复制(有选区时)
 //   - Ctrl+C                 有选区 → 复制;无选区 → 照常 SIGINT
-//   - Ctrl+Shift+V / Ctrl+V / Cmd+V  粘贴
-//   - 终端区域内右键         粘贴(替代浏览器上下文菜单)
+//   - Ctrl+Shift+V / Ctrl+V / Cmd+V  粘贴(走浏览器原生 paste 事件,
+//     见 useXTermClipboard:不接管剪贴板读取,任何来源下都可用)
+//   - 终端区域内右键         粘贴(无原生事件,走 Clipboard API)
 //   - OSC 52                 终端内程序(vim/tmux/ssh)读写系统剪贴板
 //
 // 注意:xterm 的 attachCustomKeyEventHandler 是**单槽位**,重复 attach
@@ -103,9 +104,13 @@ export function useXTermClipboard(term: Terminal): void {
             return !(ev.shiftKey || ev.metaKey)
         }
 
-        // 粘贴键:统一走剪贴板 → term.paste
-        ev.preventDefault()
-        void pasteFromClipboard(term)
+        // 粘贴键:交给浏览器原生 paste。返回 false 且不 preventDefault,
+        // 让系统在聚焦的 xterm 辅助 textarea 上触发原生 paste 事件,
+        // xterm 内置处理器读取 clipboardData → onData → WS。
+        // 相比 Clipboard API:navigator.clipboard.readText 只在安全上下文
+        // (https / localhost)可用,局域网 http 下直接失效、表现为"粘贴无
+        // 反应";原生 paste 事件任何来源都可触发,也不占用剪贴板读取授权。
+        // Ctrl+V / Ctrl+Shift+V / Cmd+V 在文本框里都会触发原生粘贴。
         return false
     })
 }
