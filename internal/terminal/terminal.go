@@ -101,12 +101,17 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 // answered by the xterm.js side with the same colors, so programs that ask
 // don't depend on these variables.
 //
-// For bash sessions it additionally injects PROMPT_COMMAND so that the mouse
-// reporting modes (DECSET 1000/1002/1003/1006) are reset just before every
-// prompt is shown. This cleans up after full-screen TUIs that enable mouse
-// reporting and die (or are killed) without sending the reset sequence:
-// otherwise the shell keeps echoing SGR mouse bytes (ESC[<b;x;yM) caused by
-// clicks, which appear as garbage on the terminal.
+// For bash sessions it additionally injects PROMPT_COMMAND so that the
+// terminal modes are reset just before every prompt is shown:
+//   - mouse reporting (?1000l/?1002l/?1003l/?1006l): full-screen TUIs that
+//     die (or are killed) without sending the reset sequence would leave the
+//     shell echoing SGR mouse bytes (ESC[<b;x;yM) caused by clicks, which
+//     appears as garbage on the terminal;
+//   - alternate screen (?1049l): a TUI killed while in the alt screen would
+//     otherwise leave the terminal stuck showing its last frame; the reset
+//     restores the main screen;
+//   - cursor show (?25h) and bracketed paste off (?2004l) complete the
+//     cleanup of a TUI that did not restore the terminal by itself.
 func buildEnv(command string, extra []string) []string {
 	termValue := "xterm-256color"
 	colorTermValue := "truecolor"
@@ -145,10 +150,11 @@ func buildEnv(command string, extra []string) []string {
 	env = append(env, "COLORFGBG="+colorFgBgValue)
 
 	if isBash(command) && promptReset {
-		// bash 每次显示提示符前执行 printf,发送鼠标模式复位序列。
-		// 覆盖 TUI 退出/被杀未复位 ?1000h 等导致鼠标字节被 echo 成乱码的场景。
+		// bash 每次显示提示符前执行 printf,发送终端模式复位序列:
+		// 离开备用屏 + 关闭鼠标上报 + 显示光标 + 关闭括号粘贴,
+		// 覆盖 TUI 退出/被杀未复位导致的残留画面、鼠标乱字节与隐藏光标。
 		env = append(env,
-			"PROMPT_COMMAND=printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l'")
+			"PROMPT_COMMAND=printf '\\033[?1049l\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1006l\\033[?25h\\033[?2004l'")
 	}
 
 	return append(env, extras...)

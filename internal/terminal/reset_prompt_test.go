@@ -7,9 +7,9 @@ import (
 )
 
 // TestTerminal_ResetSequenceOnPrompt 验证 bash 会话通过 PROMPT_COMMAND
-// 在每个提示符前发送鼠标模式复位序列(?1000l/?1002l/?1003l/?1006l),
-// 防止 TUI 退出/被杀后鼠标字节被 shell echo 成明文乱码。
-// 暂缓项断言:2004l / 1049l / 25h 等其它复位暂不启用。
+// 在每个提示符前发送终端模式复位序列:离开备用屏(?1049l)、鼠标模式
+// (?1000l/?1002l/?1003l/?1006l)、显示光标(25h)、关闭括号粘贴(?2004l),
+// 防止 TUI 退出/被杀后残留画面、鼠标字节乱码与隐藏光标。
 //
 // 注意:清理只关闭 PTY 不强等进程回收(go test 环境对 bash 的
 // SIGHUP→Wait 回收有异常;生产路径(独立进程)已验证正常)。
@@ -26,19 +26,10 @@ func TestTerminal_ResetSequenceOnPrompt(t *testing.T) {
 	})
 
 	got := collectOutput(term, 5*time.Second)
-	if !bytes.Contains(got, []byte("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")) {
+	reset := "\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?2004l"
+	if !bytes.Contains(got, []byte(reset)) {
 		t.Fatalf("prompt reset sequence not found in bash output: %q",
 			truncate(got, 300))
-	}
-	// 暂缓项:以下复位序列不应出现
-	if bytes.Contains(got, []byte("\x1b[?2004l")) {
-		t.Fatal("unexpected bracketed-paste reset (?2004l), not enabled yet")
-	}
-	if bytes.Contains(got, []byte("\x1b[?1049l")) {
-		t.Fatal("unexpected alternate-screen reset (?1049l), not enabled yet")
-	}
-	if bytes.Contains(got, []byte("\x1b[25h")) {
-		t.Fatal("unexpected cursor-show (25h), not enabled yet")
 	}
 }
 
