@@ -49,21 +49,44 @@ with a known id is idempotent / **resurrects** the recorded command
 
 ## `gotty capture` — end-to-end terminal testing
 
+The Playwright-of-terminals command: run a command, wait for the render to
+settle, take the rendered result away. Two engines:
+
+### Browser engine (recommended for pixels) — `--engine browser`
+
+Drives a headless Chrome/Chromium against the real gotty render page and
+screenshots the terminal — **what the user sees is exactly what you get**:
+real fonts, CJK, emoji, and graphics-protocol images (sixel, iTerm2
+inline). Needs a Chrome/Chromium (searched on PATH; `--browser-path`
+points at an existing binary).
+
+```sh
+gotty capture --engine browser --format png --out shot.png -- htop
+gotty capture --engine browser --format png -- sh -c 'ls -la | head -20'
+```
+
+### Native engine (fallback, no browser) — default
+
+Runs the PTY and a built-in VT emulator in-process: no browser, no
+Chromium, works on bare servers and in CI. Renders text / styled JSON
+cells / HTML / a PNG bitmap. The **kitty graphics protocol is supported
+here only**; in PNG output CJK/emoji glyphs render as placeholder boxes
+(pixel-perfect text needs the browser engine).
+
 ```sh
 gotty capture --format text -- ls -la
 gotty capture --format json -- chafa --format symbols logo.png
-gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
+gotty capture --format png -- sh -c 'printf "\033[41mRED\033[0m"'
 ```
 
-Runs the command in a fixed-size PTY (`--cols`/`--rows`, default 120×30) and
-snapshots the screen when the process exits, after output has been silent
-for `--wait-ms` (default 500 ms), when `--marker` appears in the stream, or
-on `--timeout` (default 30 s; the screen is returned with `timed_out` set).
-Text is rendered by a built-in VT emulator: SGR colors (16/256/24-bit),
-cursor/scroll/erase, alternate screen, CJK wide characters. Use `--` before
-the command and `sh -c "..."` for shell syntax. Graphics-protocol images
-(kitty/sixel/iTerm2) and pixel-perfect browser rendering are planned for
-later milestones — see [docs/capture-design.md](docs/capture-design.md).
+### Common options
+
+Both engines snapshot the screen in a fixed-size terminal
+(`--cols`/`--rows`, default 120×30) when the process exits, after output
+has been silent for `--wait-ms` (default 500 ms), when `--marker` appears
+in the stream, or on `--timeout` (default 30 s; the screen is returned
+with `timed_out` set). Use `--` before the command and `sh -c "..."` for
+shell syntax. Full design: [docs/capture-design.md](docs/capture-design.md).
 
 # Options
 

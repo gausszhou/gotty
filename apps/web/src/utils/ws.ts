@@ -39,6 +39,10 @@ export interface WSHooks {
     onDisconnect?: (message: string) => void
     onGone?: () => void
     onLatency?: (ms: number) => void
+    // 渲染就绪:收到服务端握手标记(MSG_REPLAY_DONE)。CaptureView 据此
+    // 置 window.__gottyCaptureReady,供无头浏览器(capture browser 引擎)
+    // 轮询后截图。
+    onReady?: () => void
     // 自动重连前确认会话仍存活;返回 null 则停止重连。
     resolveSession?: () => Promise<string | null>
 }
@@ -193,6 +197,7 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                     // xterm 对重放里的查询生成自动应答 —— 若此刻开启上行,
                     // 这些陈旧应答会写回 PTY,前台 shell 把它们显示成乱码。
                     // 等 onWriteParsed(重放解析完成)再开启;600ms 兜底防卡。
+                    hooks.onReady?.() // 握手已到:渲染就绪(供 capture 截图驱动)
                     if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
                     parsedUnsub?.()
                     let opened = false

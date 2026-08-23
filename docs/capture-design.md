@@ -1,9 +1,13 @@
 # GoTTY Capture 命令设计方案
 
-> 状态：**M1 已实现**（`gotty capture` native 文本：VT 仿真 emulator +
-> text/json/html 渲染 + driver + 单测；见 `internal/capture/`）。
-> M2（native 图片/png）→ M3（browser 引擎 + `/capture/:sid` 路由）
-> → M4（attached 0x37/0x38 等）按序实施。
+> 状态：**M1（native 文本）、M2（native 图片/PNG）、M3（browser 引擎 +
+> `/capture/:sid` 渲染页 + 前端图片）已实现**；M4（attached 0x37/0x38、
+> `POST /api/capture`、`--keys` 交互）待实施。
+>
+> **使用推荐：M3 优先、M2 兜底** —— 像素级渲染（真实字体/CJK/emoji、
+> sixel/iTerm2 图片的正确形态）用 `gotty capture --engine browser --format png`;
+> 无浏览器/无人值守/要文本或 kitty 图片时用默认 native 引擎。
+>
 > 目标：提供 `gotty capture` 命令——像 Playwright 驱动浏览器一样，执行指定命令，
 > 取回该命令在浏览器终端中的渲染结果（文字与图片均支持）。
 
@@ -59,9 +63,14 @@ Playwright 类比：
 
 | 引擎 | 实现 | 保真 | 依赖 | 适用 |
 |---|---|---|---|---|
-| **native**（默认） | Go 进程内：PTY + VT 仿真 + 图形协议解码 + 光栅化 | 高（文本+图片协议） | 无浏览器、无 Node | 无人值守、CI、LLM 自动化 |
-| **browser** | chromedp 驱动真实 gotty 页面，对 `.terminal` 元素截图 | 100% 浏览器所见 | Chromium（可 `--browser-path` 复用系统 Chrome） | 像素级保真、CJK/emoji、截图存证 |
+| **browser**（推荐像素） | chromedp 驱动真实 `/#/capture/:sid` 页面截图（M3 已实现） | 100% 浏览器所见 | Chrome/Chromium（`--browser-path` 可复用系统 Chrome） | 像素级保真、CJK/emoji、截图存证 |
+| **native**（兜底） | Go 进程内：PTY + VT 仿真 + 图形协议解码 + 光栅化（M1/M2 已实现） | 高（文本+图片协议） | 无浏览器、无 Node | 无人值守、CI、LLM 自动化、kitty 图片 |
 | **attached**（M4，可选） | 在线浏览器 0x37/0x38 协议快照 | 100% | 需客户端在线 + 前端合成截屏 | 巡检、远程查看当前屏幕 |
+
+> **能力差异（重要）**：浏览器路径的图片渲染依赖 `@xterm/addon-image`，
+> 支持 **sixel 与 iTerm2 inline**；**kitty 图形协议只有 native 引擎支持**。
+> 像素级文字（真实字体/CJK/emoji）只有 browser 引擎提供；native 的 PNG
+> 里 CJK/emoji 渲染为占位框。
 
 ## 4. CLI 设计
 
@@ -232,12 +241,12 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 
 ## 10. 路线图
 
-| 里程碑 | 内容 | 交付 |
-|---|---|---|
-| **M1** | native 文本 | `--engine native --format text/json/html`；依赖 runewidth（±vt10x） |
-| **M2** | native 图片 | graphics.go（kitty → sixel → iterm2）+ `--format png`（字体策略）+ `images[]`；依赖 mattn/go-sixel |
-| **M3** | browser 引擎 + 路由 | vue-router、`/capture/:sid`、`ws.ts onReady`、临时 server 驱动、chromedp；前端 `@xterm/addon-image`（日常页也看图） |
-| **M4** | attached / API / 交互 | 0x37/0x38 + 前端合成截屏；`POST /api/capture`；`--keys` 交互输入 |
+| 里程碑 | 内容 | 交付 | 状态 |
+|---|---|---|---|
+| **M1** | native 文本 | `--engine native --format text/json/html`；依赖 runewidth | ✅ 已实现 |
+| **M2** | native 图片 | graphics.go（kitty → sixel → iterm2）+ `--format png` + `images[]`；依赖 go-sixel | ✅ 已实现 |
+| **M3** | browser 引擎 + 路由 | vue-router、`/capture/:sid`、`ws.ts onReady`、临时 server 驱动、chromedp；前端 `@xterm/addon-image`（sixel/iTerm2） | ✅ 已实现 |
+| **M4** | attached / API / 交互 | 0x37/0x38 + 前端合成截屏；`POST /api/capture`；`--keys` 交互输入 | ⏳ 待实施 |
 
 ## 11. 测试与验收
 

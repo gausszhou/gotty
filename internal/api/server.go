@@ -200,6 +200,13 @@ func (server *Server) setupHandlers() http.Handler {
 	return mux
 }
 
+// SetupHandlers returns the full route handler (site + REST + WS).
+// Exported for embedded drivers that run a gotty server inside the same
+// process but manage their own listener (e.g. the capture browser engine).
+func (server *Server) SetupHandlers() http.Handler {
+	return server.setupHandlers()
+}
+
 // handleIndex serves the terminal page (vite build 产物,直接透传)。
 func (server *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	content, err := fs.ReadFile(staticFiles, "static/index.html")

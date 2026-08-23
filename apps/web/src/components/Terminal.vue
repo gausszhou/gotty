@@ -9,9 +9,16 @@ import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { ImageAddon } from '@xterm/addon-image'
 import '@xterm/xterm/css/xterm.css'
 import { currentTheme, onThemeChange, type Theme } from '../utils/theme'
 import { useXTermClipboard, loadClipboardAddon } from '../utils/clipboard'
+
+const props = defineProps<{
+    // 使用 DOM 渲染器而非 WebGL:图形协议图片(image addon)在 DOM
+    // 渲染器下以 img 元素渲染,截图/合成最稳(capture 渲染页用)。
+    domRenderer?: boolean
+}>()
 
 const emit = defineEmits<{
     // 服务端 SetWindowTitle 帧;不再直接写 document.title,
@@ -65,12 +72,25 @@ onMounted(() => {
   // OSC 52:终端内程序(vim/tmux/ssh)读写浏览器系统剪贴板
   loadClipboardAddon(term)
 
+  // 图形协议图片(kitty / sixel / iTerm2 inline):chafa/img2sixel 等
+  // 输出在终端里显示为真实图片(WebGL 渲染器下以 overlay 层覆盖)。
+  try {
+    term.loadAddon(new ImageAddon())
+    document.body.dataset.imageAddon = '1'
+  } catch (e) {
+    // 环境不支持时静默回退(图片退化为占位文本)
+    document.body.dataset.imageAddon = '0'
+    console.error('image addon failed to load', e)
+  }
+
   // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时
   // loadAddon 会抛错,自动回退到 xterm 内置的 DOM 渲染器。
-  try {
-    term.loadAddon(new WebglAddon())
-  } catch {
-    // 回退 DOM 渲染器即可,无需处理
+  if (!props.domRenderer) {
+    try {
+      term.loadAddon(new WebglAddon())
+    } catch {
+      // 回退 DOM 渲染器即可,无需处理
+    }
   }
 
   term.open(terminalEl.value!)
