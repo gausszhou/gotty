@@ -1,6 +1,6 @@
 # GoTTY - Web terminals, driven end to end
 
-【**English** | [简体中文](README.zh-CN.md)】
+**English** | [简体中文](README.zh-CN.md)
 
 GoTTY is a command line tool that runs your CLI tools in browser-hosted
 terminals: sessions are created over a REST API, attached over WebSocket
