@@ -40,6 +40,13 @@ func TestEncodeReconnect(t *testing.T) {
 	}
 }
 
+func TestEncodeReplayDone(t *testing.T) {
+	frame := EncodeReplayDone()
+	if len(frame) != 1 || frame[0] != SetReplayDone {
+		t.Fatalf("unexpected replay-done frame: %v", frame)
+	}
+}
+
 func TestDecodeClientFrame(t *testing.T) {
 	cases := []struct {
 		name    string

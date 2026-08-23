@@ -83,7 +83,14 @@ type Terminal interface {
 
 // outputRingCapacity bounds the per-session replay buffer kept for
 // reconnecting clients.
-const outputRingCapacity = 128 * 1024
+//
+// 4MB 而非 128KB:重放的是原始字节流,它的隐式终端状态(备用屏进出、
+// 光标、已入镜的转义序列)必须与 PTY 真实状态一致才有意义。128KB 在
+// 一次实质性的 TUI 会话(opencode/懒加载滚动/长输出)中极易回绕,
+// 把较早的 `ESC[?1049h`(进入备用屏)挤出缓冲 —— 刷新后回放失去备用屏
+// 入口,程序退出时的 `ESC[?1049l` 变成空操作,画面残留无法清除。
+// 4MB 使正常会话几乎不可能回绕,回放保持自洽。
+const outputRingCapacity = 4 * 1024 * 1024
 
 // Session is one terminal process with its lifecycle state.
 // A Session is safe for concurrent use.
@@ -325,6 +332,13 @@ func (s *Session) bridge(ctx context.Context, conn io.ReadWriter, opts AttachOpt
 	if err := s.replayOutput(conn, snapshot); err != nil {
 		return err
 	}
+	// 回放完成标记:客户端收到它之后才允许上行输入。回放字节流里带着
+	// 程序启动时的终端查询(DSR/DECRQM/OSC),新 xterm 会为它们自动生成
+	// 应答;这些应答若被写回 PTY,等于向一个早已不等待的程序注入陈旧
+	// 且位置错误的数据。见 apps/web/src/utils/ws.ts 的输入静默。
+	if _, err := conn.Write(terminal.EncodeReplayDone()); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -431,8 +445,92 @@ func (s *Session) outputPump() {
 	}
 }
 
+// frameReader yields one complete client message (one frame) per call.
+// wsConn(WebSocket 连接)实现它;io.Pipe 等测试替身不实现,走逐块读取。
+type frameReader interface {
+	ReadMessage() ([]byte, error)
+}
+
 // masterToSlave relays client frames to the terminal.
+//
+// 帧读取:WebSocket 连接的 Read 是字节流,一次 Read 并不等于一帧 ——
+// 输入帧超过单次缓冲(32KB)时会被拆成多段,只有第一段带类型字节,
+// 其余段会被误判为独立帧(第二个"帧"以负载字节开头,解析即错)。
+// 所以支持帧读取的连接按"一条完整消息 = 一帧"解析,帧大小只受服务端
+// 读限(16MB)约束;不支持者为兼容测试/内部接口退回升级前的逐块路径。
 func (s *Session) masterToSlave(ctx context.Context, conn io.ReadWriter, opts AttachOptions) error {
+	// 每次 attach 的第一个 resize 帧额外做一次尺寸抖动,让内核向 PTY
+	// 前台进程组发 SIGWINCH,强制前台程序整帧重绘。重放结束后画面因此
+	// 与程序真实状态收敛(抹掉重放残余的半帧/旧几何内容)。手动向 shell
+	// 发 SIGWINCH 无效(bash 不转发),真实 TIOCSWINSZ 才保证到达前台。
+	firstResize := true
+
+	// 帧解析后的分发逻辑(两种读取路径共用)
+	dispatch := func(message terminal.ClientMessage) error {
+		switch message.Type {
+		case terminal.Input:
+			if !opts.PermitWrite || len(message.Payload) == 0 {
+				return nil
+			}
+			if _, err := s.term.Write(message.Payload); err != nil {
+				return fmt.Errorf("failed to write received data to terminal: %w", err)
+			}
+
+		case terminal.Ping:
+			if _, err := conn.Write(terminal.EncodePong()); err != nil {
+				return ErrClientClosed
+			}
+
+		case terminal.ResizeTerminal:
+			if opts.FixedCols > 0 && opts.FixedRows > 0 {
+				return nil
+			}
+			args, err := terminal.ParseResizeArgs(message.Payload)
+			if err != nil {
+				return err
+			}
+			if err := s.term.Resize(args.Columns, args.Rows); err != nil {
+				return fmt.Errorf("failed to resize terminal: %w", err)
+			}
+			if firstResize {
+				firstResize = false
+				if args.Rows > 1 && args.Columns > 1 {
+					// 抖动:r-1 → r 两跳,各触发一次 SIGWINCH;失败只记录,
+					// 不阻断正常 resize(前台程序最终按真实尺寸重绘)。
+					if err := s.term.Resize(args.Columns, args.Rows-1); err == nil {
+						_ = s.term.Resize(args.Columns, args.Rows)
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	// 帧读取路径(WebSocket):一次 ReadMessage = 一帧
+	if fr, ok := conn.(frameReader); ok {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			message, err := fr.ReadMessage()
+			if err != nil {
+				return ErrClientClosed
+			}
+			if len(message) == 0 {
+				continue
+			}
+			decoded, err := terminal.DecodeClientFrame(message)
+			if err != nil {
+				return err
+			}
+			if err := dispatch(decoded); err != nil {
+				return err
+			}
+		}
+	}
+
 	buffer := make([]byte, 32*1024)
 	for {
 		select {
@@ -450,32 +548,8 @@ func (s *Session) masterToSlave(ctx context.Context, conn io.ReadWriter, opts At
 		if err != nil {
 			return err
 		}
-
-		switch message.Type {
-		case terminal.Input:
-			if !opts.PermitWrite || len(message.Payload) == 0 {
-				continue
-			}
-			if _, err := s.term.Write(message.Payload); err != nil {
-				return fmt.Errorf("failed to write received data to terminal: %w", err)
-			}
-
-		case terminal.Ping:
-			if _, err := conn.Write(terminal.EncodePong()); err != nil {
-				return ErrClientClosed
-			}
-
-		case terminal.ResizeTerminal:
-			if opts.FixedCols > 0 && opts.FixedRows > 0 {
-				continue
-			}
-			args, err := terminal.ParseResizeArgs(message.Payload)
-			if err != nil {
-				return err
-			}
-			if err := s.term.Resize(args.Columns, args.Rows); err != nil {
-				return fmt.Errorf("failed to resize terminal: %w", err)
-			}
+		if err := dispatch(message); err != nil {
+			return err
 		}
 	}
 }

@@ -390,6 +390,11 @@ func TestWSPreemptsSession(t *testing.T) {
 	if frame := readWSFrame(t, conn); frame[0] != terminal.SetWindowTitle {
 		t.Fatalf("unexpected first frame type `%c`", frame[0])
 	}
+	// 回放完成标记(回放为空时紧随标题帧);若不消费,后续抢占测试里
+	// conn.Reader 会先读到这个缓冲帧而不是 close
+	if frame := readWSFrame(t, conn); frame[0] != terminal.SetReplayDone {
+		t.Fatalf("expected SetReplayDone after title, got type `%c`", frame[0])
+	}
 
 	// a second attach to the same session preempts the first one
 	conn2 := dialWS(t, ts, id)

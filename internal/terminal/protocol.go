@@ -35,6 +35,12 @@ const (
 	SetPreferences = '4'
 	// SetReconnect tells the client to reconnect after disconnection.
 	SetReconnect = '5'
+	// SetReplayDone is sent once after the attach-time replay of the
+	// output ring finishes. It tells the client that input forwarding
+	// may begin: answers xterm auto-generates for replayed terminal
+	// queries (DSR/DECRQM/OSC) must NOT be written back into the PTY —
+	// the program that issued them is gone or no longer waiting.
+	SetReplayDone = '6'
 )
 
 // EncodeFrame wraps payload with a message type byte:
@@ -70,6 +76,11 @@ func EncodePreferences(prefs []byte) []byte {
 func EncodeReconnect(seconds int) []byte {
 	payload, _ := json.Marshal(seconds)
 	return EncodeFrame(SetReconnect, payload)
+}
+
+// EncodeReplayDone builds an empty-byte SetReplayDone frame.
+func EncodeReplayDone() []byte {
+	return []byte{SetReplayDone}
 }
 
 // ClientMessage is a decoded frame received from the client.

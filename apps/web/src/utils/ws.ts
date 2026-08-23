@@ -10,12 +10,13 @@ const MSG_INPUT = 0x31 // '1'
 const MSG_PING = 0x32 // '2'
 const MSG_RESIZE = 0x33 // '3'
 
-// 服务端(→客户端):输出 / 心跳回应 / 窗口标题 / 偏好 / 重连秒数
+// 服务端(→客户端):输出 / 心跳回应 / 窗口标题 / 偏好 / 重连秒数 / 回放完成
 const MSG_OUTPUT = 0x31
 const MSG_PONG = 0x32
 const MSG_WINDOW_TITLE = 0x33
 const MSG_PREFERENCES = 0x34
 const MSG_RECONNECT = 0x35
+const MSG_REPLAY_DONE = 0x36
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -76,16 +77,29 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
     // xterm 的 onData/onResize 是累加事件:每次 connect 若重新注册,
     // 重连后一次按键会发送多次输入 → 输入输出重复。只注册一次。
     let inputBound = false
+    // 输入上行开关:回放期间关闭。回放字节流里带着程序启动时的终端查询
+    // (DSR/DECRQM/OSC),xterm.js 会为它们自动生成应答并经 onData 上行;
+    // 若写回 PTY,等于向早已不等待的程序注入陈旧应答。收到服务端
+    // MSG_REPLAY_DONE 后才开启;REPLAY_GATE_MAX_MS 封顶兜底 —— 大回放
+    // (MB 级)在慢网下传输超过该时限时,查询都在回放头部(程序启动处)、
+    // 早已被解析丢弃,尾部再出现查询的几率极低,允许放开输入避免
+    // 键入/粘贴长时间失效(查询头在 ring 头部,先到先弃)。
+    let inputEnabled = false
+    const REPLAY_GATE_MAX_MS = 2000
+    let gateTimer: ReturnType<typeof setTimeout> | null = null
 
     const clearTimers = () => {
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+        if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
     }
 
     const connect = (sid: string) => {
         // 单连接语义:新连接抢占旧连接 —— 先关闭旧连接并摘除其回调,
         // 避免旧连接的 onclose 再触发断开/重连逻辑,也避免计时器叠加。
         clearTimers()
+        inputEnabled = false
+        gateTimer = setTimeout(() => { inputEnabled = true }, REPLAY_GATE_MAX_MS)
         if (ws && ws.readyState !== WebSocket.CLOSED) {
             const old = ws
             old.onopen = null
@@ -110,7 +124,7 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
             if (!inputBound) {
                 inputBound = true
                 term.onInput((input) => {
-                    if (ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_INPUT, input))
+                    if (inputEnabled && ws && ws.readyState === WebSocket.OPEN) ws.send(encode(MSG_INPUT, input))
                 })
                 term.onResize((columns, rows) => {
                     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -158,6 +172,12 @@ export function openTerminalWS(term: TermHandle, sessionId: string, hooks: WSHoo
                     break // xterm 构造参数已配置,无需动态应用
                 case MSG_RECONNECT:
                     reconnectSeconds = Number(decoder.decode(payload))
+                    break
+                case MSG_REPLAY_DONE:
+                    // 回放结束:开启输入上行(回放期 xterm 自动应答被丢弃),
+                    // 并取消兜底计时器(若已触发则输入已开启,幂等无害)
+                    if (gateTimer) { clearTimeout(gateTimer); gateTimer = null }
+                    inputEnabled = true
                     break
             }
         }

@@ -43,6 +43,10 @@ func (server *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to accept websocket from %s: %s", r.RemoteAddr, err)
 		return
 	}
+	// coder/websocket 默认消息读限 32KB,超限直接 1009 断连 —— 浏览器端
+	// 一次粘贴/大块输入会整帧上行,很容易超限。调大到 16MB(仍有界,防滥
+	// 用),配合 ReadMessage() 按完整消息解析(见 masterToSlave 帧读取)。
+	conn.SetReadLimit(16 << 20)
 
 	server.wsWG.Add(1)
 	server.activeConns.Store(conn, struct{}{})
@@ -139,6 +143,24 @@ func (c *wsConn) Read(p []byte) (int, error) {
 	n := copy(p, c.pending)
 	c.pending = c.pending[n:]
 	return n, nil
+}
+
+// ReadMessage returns one complete client message per call (frame-oriented).
+// 与 Read 的"字节流"语义不同,它保证一条 WebSocket 消息(一帧)不会被打散:
+// masterToSlave 据此把"一次 Read = 一帧"的假设建立在真实边界上 ——
+// 超过单次 Read 缓冲(32KB)的输入帧(如大粘贴)不再被拆成两个假帧
+// (第二个假帧会因帧首字节不是类型字节而被误判/误解析)。
+func (c *wsConn) ReadMessage() ([]byte, error) {
+	for {
+		typ, reader, err := c.conn.Reader(c.ctx)
+		if err != nil {
+			return nil, err
+		}
+		if typ != websocket.MessageBinary {
+			continue
+		}
+		return io.ReadAll(reader)
+	}
 }
 
 func (c *wsConn) Write(p []byte) (int, error) {

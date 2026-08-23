@@ -320,6 +320,12 @@ func TestAttachProtocol(t *testing.T) {
 		t.Fatalf("unexpected reconnect payload: %q", frame[1:])
 	}
 
+	// 回放完成标记:紧跟 init 帧、先于任何实时输出
+	frame = readFrame(t, outReader)
+	if len(frame) != 1 || frame[0] != terminal.SetReplayDone {
+		t.Fatalf("expected SetReplayDone after replay, got: %v", frame)
+	}
+
 	// 2. terminal output -> Output frame
 	if _, err := stub.writer.Write([]byte("hello")); err != nil {
 		t.Fatalf("unexpected error from stub write: %s", err)
@@ -351,7 +357,7 @@ func TestAttachProtocol(t *testing.T) {
 		t.Fatalf("expected Pong, got: %v", frame)
 	}
 
-	// 5. resize -> terminal
+	// 5. resize -> terminal(首次 resize 伴随对齐抖动:40→39→40,末值必须为目标尺寸)
 	resize := terminal.EncodeFrame(terminal.ResizeTerminal, []byte(`{"columns":120,"rows":40}`))
 	if _, err := inWriter.Write(resize); err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -359,7 +365,8 @@ func TestAttachProtocol(t *testing.T) {
 	waitFor(t, "terminal resize", func() bool {
 		stub.mu.Lock()
 		defer stub.mu.Unlock()
-		return len(stub.resizes) == 1 && stub.resizes[0] == [2]int{120, 40}
+		n := len(stub.resizes)
+		return n >= 2 && stub.resizes[n-1] == [2]int{120, 40}
 	})
 
 	// 6. 同 id 的新 attach 抢占当前客户端
@@ -391,6 +398,9 @@ func TestAttachProtocol(t *testing.T) {
 	} else if string(frame[1:]) != "hello" {
 		t.Fatalf("unexpected replayed output after preempt: %q", frame[1:])
 	}
+	if frame := readFrame(t, outReader3); frame[0] != terminal.SetReplayDone {
+		t.Fatalf("expected SetReplayDone after preempt replay, got type `%c`", frame[0])
+	}
 
 	// 7. 新客户端断开 -> attach 返回,状态回 idle
 	inWriter3.Close()
@@ -420,6 +430,10 @@ func TestAttachProtocol(t *testing.T) {
 		t.Fatalf("expected replayed Output frame, got type `%c`", frame[0])
 	} else if string(frame[1:]) != "hello" {
 		t.Fatalf("unexpected replayed output: %q", frame[1:])
+	}
+	// 回放完成标记:在重放输出之后
+	if frame := readFrame(t, outReader2); frame[0] != terminal.SetReplayDone {
+		t.Fatalf("expected SetReplayDone after reattach replay, got type `%c`", frame[0])
 	}
 	inWriter2.Close()
 	<-preemptDone
