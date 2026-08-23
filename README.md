@@ -1,106 +1,86 @@
-# GoTTY - Share your terminal as a web application
+# GoTTY - Web terminals, driven end to end
 
-GoTTY is a simple command line tool that turns your CLI tools into web
-applications. It runs a command in a PTY and serves it to browsers over
-WebSocket, with REST API based session management.
+**[中文版](README.zh-CN.md)**
+
+GoTTY is a command line tool that runs your CLI tools in browser-hosted
+terminals: sessions are created over a REST API, attached over WebSocket
+and managed as tabs in the page. `gotty capture` turns the same PTY
+pipeline into an end-to-end testing command — run anything headlessly and
+take the rendered result away as text, styled JSON cells or HTML,
+Playwright-style.
 
 ![Screenshot](screenshot.gif)
 
 # Features
 
 - **Multiple sessions** — create, attach, detach and destroy terminal sessions via a REST API.
-- **Reconnection** — a session's process keeps running while its client is disconnected; the client can rejoin the same session.
-- **Binary WebSocket protocol** — terminal streams are transferred as raw bytes (no base64 overhead).
-- **Modern frontend** — Vite + Vue 3 + xterm.js with WebGL rendering.
-- **i18n UI** — interface follows the browser language (中文/English), with a manual toggle in the tab bar; the choice is remembered.
+- **Terminal capture** — `gotty capture` runs any command and returns its rendered result as text, styled JSON cells or HTML; no browser, no running server.
+- **Reconnection** — the process keeps running while the client is disconnected; a refresh (same id) resumes the same session.
+- **Modern frontend** — Vite + Vue 3 + xterm.js with WebGL rendering and an i18n UI (中文/English).
 
 # Installation
 
-Download the latest stable binary file from the [Releases](https://github.com/gausszhou/gotty/releases) page.
-(File names containing `darwin_amd64`/`darwin_arm64` are for macOS users.)
-
-Or build from source:
+Download the latest binary from the [Releases](https://github.com/gausszhou/gotty/releases) page, or build from source (Go 1.26+, Node.js 18+, pnpm):
 
 ```sh
-# requires Go 1.26+, Node.js 18+ and pnpm
-make all
+make install   # frontend dependencies
+make build     # frontend + embedded static + ./build/gotty
 ```
 
 # Usage
 
+## `gotty serve` — web terminals
+
+```sh
+gotty serve --port 8080 top
 ```
-Usage: gotty serve [flags] [command [<arguments...>]]
+
+Open `http://localhost:8080` and click the create card (or **＋** in the tab
+bar) to create a session running the command and attach to it. Without a
+command, the default session command is the login shell (`$SHELL`).
+
+Session ids are generated **by the client** (16 base36 chars) and kept in a
+per-device list in `localStorage`; the server stores records by id only and
+never exposes a global list. Reloading the page never creates a session —
+it reopens the most recent alive one, or shows the create card. Creating
+with a known id is idempotent / **resurrects** the recorded command
+(`run_count+1`); re-attaching the same id preempts the old client
+(WS 1013).
+
+## `gotty capture` — end-to-end terminal testing
+
+```sh
+gotty capture --format text -- ls -la
+gotty capture --format json -- chafa --format symbols logo.png
+gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 ```
 
-Run the server with your preferred command as its arguments
-(e.g. `gotty serve --port 8080 top`), then open `http://localhost:8080` in
-your browser: click **创建终端会话** (or the **＋** button in the tab bar) to
-create a session running the command and attach to it. Refreshing the page
-never creates a session on its own — it only reopens the most recently
-alive session, or shows the create card when there is none.
+Runs the command in a fixed-size PTY (`--cols`/`--rows`, default 120×30) and
+snapshots the screen when the process exits, after output has been silent
+for `--wait-ms` (default 500 ms), when `--marker` appears in the stream, or
+on `--timeout` (default 30 s; the screen is returned with `timed_out` set).
+Text is rendered by a built-in VT emulator: SGR colors (16/256/24-bit),
+cursor/scroll/erase, alternate screen, CJK wide characters. Use `--` before
+the command and `sh -c "..."` for shell syntax. Graphics-protocol images
+(kitty/sixel/iTerm2) and pixel-perfect browser rendering are planned for
+later milestones — see [docs/capture-design.md](docs/capture-design.md).
 
-Session ids are generated **by the client** (16 base36 chars). Each device
-keeps its own session list in `localStorage`; the server keeps records by
-id only and never exposes a global session list. Reloading the page
-rejoins the most recently opened alive session (same id = same session).
-Sessions that disappear server-side (destroyed, idle-expired, process
-exit) are pruned from the device list on the next status poll; their
-server records remain, so the same id can still be **resurrected** via
-`POST /api/sessions` (recorded command, `run_count` increments), e.g.
-from another device that knows the id. Different devices use different
-ids and never preempt each other; the same id re-attach still preempts
-(WS close 1013).
-
-Starting without a command (`gotty serve`) falls back to the login shell
-(`$SHELL`, or `/bin/sh` when unset) as the default session command, so a
-session created from the page without an explicit command is always usable.
-An explicit command in `POST /api/sessions` always takes precedence (except
-for resurrected sessions, which use the recorded command).
-
-## Copy & Paste
-
-The terminal supports the usual browser clipboard shortcuts, so Linux users
-don't need to fight the terminal meaning of `Ctrl+C`/`Ctrl+V`:
-
-- **Select** text with the mouse (double-click = word, triple-click = line).
-- **Copy**: `Ctrl+Shift+C` (Linux/Windows) or `Cmd+C` (macOS). Plain
-  `Ctrl+C` copies when there is a selection, otherwise it is the normal
-  interrupt (SIGINT) sent to the shell.
-- **Paste**: `Ctrl+Shift+V`, `Ctrl+V`, `Cmd+V` (macOS), or **right-click**
-  anywhere inside the terminal.
-- **OSC 52**: programs inside the terminal (vim's `+clipboard`, tmux with
-  `set -g set-clipboard on`, SSH sessions) can read and write the browser's
-  system clipboard through the `OSC 52` protocol.
-- Copying/pasting uses the Clipboard API where available (HTTPS/localhost)
-  and falls back to `execCommand` in non-secure contexts (e.g. plain HTTP
-  on a LAN).
-
-## Theme & Terminal Colors
-
-The dark/light theme switch is purely client-side: CSS variables plus the
-xterm.js palette (`Terminal.options.theme`) update immediately — the page
-and the terminal renderer stay in sync. Sessions are launched with
-`COLORTERM=truecolor` (24-bit color support for TUIs like neovim, lazygit,
-fzf), and live color queries (`OSC 10/11 ; ?`) are answered by xterm.js
-with the current theme colors, so programs that ask on startup (vim/neovim
-background detection) pick colors that match. The theme is **not** pushed
-into the PTY at runtime; programs already running keep their own colors.
-
-## Options
+# Options
 
 ```
 -a, --address string        IP address to listen (default: "0.0.0.0") [$GOTTY_ADDRESS]
 -p, --port string           Port number to listen (default: "8080") [$GOTTY_PORT]
--w, --permit-write          Permit clients to write to the TTY (BE CAREFUL) [$GOTTY_PERMIT_WRITE]
+-w, --permit-write          Permit clients to write to the TTY (default: true — BE CAREFUL) [$GOTTY_PERMIT_WRITE]
     --title-format string   Title format of browser window (default: "GoTTY - {{ .command }}@{{ .hostname }}") [$GOTTY_TITLE_FORMAT]
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
-    --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900) [$GOTTY_TIMEOUT]
+    --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
+    --session-file string   File path to persist session records (default: "~/.gotty.sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --width int             Static width of the screen, 0(default) means dynamically resize [$GOTTY_WIDTH]
     --height int            Static height of the screen, 0(default) means dynamically resize [$GOTTY_HEIGHT]
     --ws-origin string      A regular expression that matches origin URLs to be accepted by WebSocket [$GOTTY_WS_ORIGIN]
-    --term string           Terminal name to use on the browser (default: "xterm") [$GOTTY_TERM]
+    --term string           TERM value used inside session PTYs (default: "xterm-256color") [$GOTTY_TERM]
 -t, --tls                   Enable TLS/SSL [$GOTTY_TLS]
     --tls-crt string        TLS/SSL certificate file path (default: "~/.gotty.crt") [$GOTTY_TLS_CRT]
     --tls-key string        TLS/SSL key file path (default: "~/.gotty.key") [$GOTTY_TLS_KEY]
@@ -111,150 +91,37 @@ into the PTY at runtime; programs already running keep their own colors.
 -v, --version               print the version
 ```
 
-### Config File
+# Configuration & Security
 
-GoTTY loads a JSON profile file by default from `~/.gotty/config.json` when it exists.
-The path can be changed with `--config` (also honored on the root command,
-e.g. `gotty --config ./gotty.json serve`) or the `GOTTY_CONFIG` environment
-variable. Command line flags take precedence over config file values, which
-take precedence over `GOTTY_*` environment variables.
+GoTTY loads a JSON profile from `~/.gotty/config.json` when present
+(override with `--config`; flags > config file > `GOTTY_*` env vars).
+Unknown keys are ignored.
 
-```json
-{
-  "port": "9000",
-  "enable_tls": true,
-  "permit_write": false
-}
-```
+> `--permit-write` defaults to **true**: by default anyone who can reach the
+> page can type into your sessions. Make sessions read-only with
+> `--permit-write=false`, and protect the port with TLS (`-t`) and/or a
+> reverse proxy. Traffic is unencrypted unless TLS is enabled.
 
-Config files are read from `~/.gotty/config.json` by default (override
-with `--config FILE`). Unknown keys are ignored so that config files
-written for older GoTTY versions keep working.
-
-### Server Log
-
-The server log is written to both the console and
-`~/.gotty/logs/gotty.log` (append mode), so connection issues can be
-checked later. Use `--log-file <path>` to change the path, or an empty
-value to keep the console-only behavior.
-
-### Security Options
-
-By default, GoTTY doesn't allow clients to send any keystrokes or commands
-except terminal window resizing. When you want to permit clients to write
-input to the TTY, add the `-w` option. However, accepting input from remote
-clients is dangerous for most commands.
-
-All traffic between the server and clients is NOT encrypted by default.
-When you send secret information through GoTTY, we strongly recommend you
-use the `-t` option which enables TLS/SSL. By default, GoTTY loads the crt
-and key files placed at `~/.gotty.crt` and `~/.gotty.key`. You can overwrite
-these file paths with the `--tls-crt` and `--tls-key` options. To generate a
-self-signed certificate:
+# Running in the Background
 
 ```sh
-openssl req -x509 -nodes -days 9999 -newkey rsa:2048 -keyout ~/.gotty.key -out ~/.gotty.crt
+nohup ./build/gotty serve --log-file ~/.gotty/logs/gotty.log >/dev/null 2>&1 &
 ```
 
-## Running in the Background (Daemon)
+For restart-on-crash and boot startup, install a systemd (user) service;
+see the [guide](apps/docs/guide/usage.md) for the full unit.
 
-GoTTY serves clients as long as its process is alive, so making it a
-long-running daemon is just a matter of keeping that process alive
-across terminal close, logout and crashes. A plain `&` in a terminal
-dies with the terminal (or at logout); use one of the following instead.
+# Multiple Clients, One Terminal
 
-### Quick start with `nohup`
-
-Start it detached from the terminal and let it log to GoTTY's own log
-file (`~/.gotty/logs/gotty.log` by default):
+One session = one attached client; a second attach to the **same id**
+preempts the first, different ids never preempt each other. For several
+*simultaneous* viewers of one terminal use a multiplexer:
 
 ```sh
-$ nohup ./build/gotty serve --log-file ~/.gotty/logs/gotty.log \
-    >/dev/null 2>&1 &
-$ disown                  # optional: drop it from the shell's job table
+gotty tmux new -A -s gotty top     # viewers see the same screen (they can type by default)
 ```
 
-`nohup ... &` survives terminal close but is **not** restarted after a
-crash and does not start at boot. For that, use a process supervisor.
-
-### systemd (recommended)
-
-A systemd service restarts after crashes and can start automatically at
-boot. The example below installs a *user* service (per-login, no root
-needed). Put it in `~/.config/systemd/user/gotty.service`:
-
-```ini
-[Unit]
-Description=GoTTY terminal sharing server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/path/to/build/gotty serve
-WorkingDirectory=/path/to
-Restart=always
-RestartSec=3
-# GoTTY already logs to ~/.gotty/logs/gotty.log (see --log-file); keep
-# journal noise low by overriding it, e.g.:
-#   ExecStart=/path/to/build/gotty serve --log-file /var/log/gotty.log
-
-[Install]
-WantedBy=default.target
-```
-
-Install, start and make it survive logout and boot:
-
-```sh
-$ systemctl --user daemon-reload
-$ systemctl --user enable --now gotty.service   # start now + on login
-$ loginctl enable-linger $USER                  # keep running with no login
-```
-
-Useful commands:
-
-```sh
-$ systemctl --user status gotty.service         # status + recent log lines
-$ journalctl --user -u gotty.service -f         # follow the service log
-$ systemctl --user restart gotty.service        # restart after a rebuild
-$ systemctl --user stop gotty.service           # stop it
-```
-
-For a system-wide service (every user, started at boot by root), place
-the same unit in `/etc/systemd/system/gotty.service`, change
-`WantedBy=default.target` to `multi-user.target`, and manage it with
-`sudo systemctl enable --now gotty.service`.
-
-> Tip: when the service restarts, in-memory sessions are lost (session
-> state lives in the server process). The browser page automatically
-> creates new sessions, so this is transparent to end users.
-
-## Sharing with Multiple Clients
-
-Each session runs one process, shared across page reloads: while one client
-is attached, a second attach to the **same session id** preempts the first
-(WS close 1013 "session preempted"), and once the attached client
-disconnects the process keeps running, so a refresh (same id) resumes it.
-Every device generates its own ids, so multiple devices never preempt each
-other — the same id only means the same session. For multiple *simultaneous*
-viewers of one session, use a terminal multiplexer:
-
-```sh
-$ gotty tmux new -A -s gotty top
-```
-
-This command doesn't allow clients to send keystrokes, however, you can
-attach the session from your local terminal and run operations like
-switching the mode of the `top` command. To connect to the tmux session
-from your terminal, use the following command.
-
-```sh
-$ tmux new -A -s gotty
-```
-
-## REST API
-
-### Sessions
+# REST API
 
 ```
 POST   /api/sessions               create a session (empty command uses the default command)
@@ -266,58 +133,27 @@ POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
 ```
 
-The server no longer lists sessions: the list lives on the client
-(`localStorage["gotty.sessions"]`), so `GET /api/sessions` and
-`GET /api/sessions/history` have been removed. `POST /api/sessions` accepts
-an optional client-chosen `id` (16 base36 chars): an alive id is returned
-as-is (`200`, idempotent), an id with a server record is **resurrected**
-(recorded command/args, `run_count+1`), and an unknown/new id (or no id —
-legacy clients) creates a fresh session.
+`POST /api/sessions` accepts an optional client-chosen `id` (16 base36):
+an alive id returns the existing session (`200`), a recorded id
+**resurrects** it (recorded command/args, `run_count+1`), an unknown/new id
+(or none) creates a fresh session. There is no session list endpoint — the
+list lives client-side.
 
-Example:
-
-```sh
-$ curl -X POST localhost:8080/api/sessions \
-    -d '{"id":"abc123abc123abca", "command": "top", "width": 120, "height": 40}'
-{"id":"abc123abc123abca","state":"idle","command":"top","args":[],"pid":1234,"exited":false,"created_at":"..."}
-
-$ curl -X POST localhost:8080/api/sessions/status -d '{"ids":["abc123abc123abca"]}'
-{"sessions":{"abc123abc123abca":{"id":"abc123abc123abca","state":"idle", ...}}}
-```
-
-### WebSocket
-
-```
-WS /ws?session_id=xxx   attach to an existing session
-```
-
-The connection is established with subprotocol `webtty` (no handshake
-frame required). Messages are binary frames of the form
-`[type byte][payload]`:
-
-| type | client → server | server → client |
-|---|---|---|
-| `0x31` ('1') | Input (raw bytes) | Output (raw bytes) |
-| `0x32` ('2') | Ping | Pong |
-| `0x33` ('3') | ResizeTerminal (JSON) | SetWindowTitle (string) |
-| `0x34` ('4') | — | SetPreferences (JSON) |
-| `0x35` ('5') | — | SetReconnect (JSON) |
-| `0x36` ('6') | — | SetReplayDone (empty handshake marker after the attach-time init frames; gates client input forwarding) |
-
-## Development
-
-Build the frontend and the binary:
+# Development
 
 ```sh
 make install   # pnpm install for the pnpm workspace
-make all       # frontend (Vite) -> static (go:embed) -> release binary
+make build     # frontend (Vite) -> static (go:embed) -> ./build/gotty
+make all       # frontend + static + cross-platform release (linux/amd64 + arm64)
+make docs      # VitePress documentation site (apps/docs)
 make test      # go vet + gofmt + go test
 ```
 
-The Go sources are layered as `internal/api` (HTTP/WebSocket) →
-`internal/session` (session lifecycle) → `internal/terminal` (PTY +
-binary protocol). See [docs/feat-architecture.md](docs/feat-architecture.md) for the
-full design.
+Sources are layered `internal/api` (HTTP/WebSocket) → `internal/session`
+(lifecycle) → `internal/terminal` (PTY + binary protocol); the capture
+engine lives in `internal/capture`. See
+[docs/feat-architecture.md](docs/feat-architecture.md) and the
+[guide](apps/docs/guide/usage.md).
 
 # License
 
