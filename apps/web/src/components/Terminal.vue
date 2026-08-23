@@ -88,7 +88,7 @@ onMounted(() => {
   ;(term.element as HTMLElement).style.fontFamily = FONT_FAMILY
 
   resizeHandler = () => {
-    fitAddon.fit()
+    fit()
   }
 
   requestAnimationFrame(() => {
@@ -113,6 +113,8 @@ onBeforeUnmount(() => {
 // 钳到 1 并 resize 出"1 行终端",该会话从此只剩一行、光标永远在第一行、
 // 无法向下 —— 因此零尺寸时跳过,等可见后再由上层 fit。
 function fit() {
+  const el = terminalEl.value
+  if (!el || el.clientWidth === 0 || el.clientHeight === 0) return
   fitAddon?.fit()
 }
 
