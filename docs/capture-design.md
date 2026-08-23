@@ -1,6 +1,9 @@
 # GoTTY Capture 命令设计方案
 
-> 状态：设计中（评审通过后按 M1→M4 实施）
+> 状态：**M1 已实现**（`gotty capture` native 文本：VT 仿真 emulator +
+> text/json/html 渲染 + driver + 单测；见 `internal/capture/`）。
+> M2（native 图片/png）→ M3（browser 引擎 + `/capture/:sid` 路由）
+> → M4（attached 0x37/0x38 等）按序实施。
 > 目标：提供 `gotty capture` 命令——像 Playwright 驱动浏览器一样，执行指定命令，
 > 取回该命令在浏览器终端中的渲染结果（文字与图片均支持）。
 

@@ -36,4 +36,5 @@ func init() {
 	rootCmd.PersistentFlags().String("config", configPath, "Config file path (GOTTY_CONFIG env var)")
 
 	rootCmd.AddCommand(buildServeCmd())
+	rootCmd.AddCommand(buildCaptureCmd())
 }
