@@ -72,6 +72,7 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
+    --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]
     --width int             Static width of the screen, 0(default) means dynamically resize [$GOTTY_WIDTH]
     --height int            Static height of the screen, 0(default) means dynamically resize [$GOTTY_HEIGHT]
     --ws-origin string      A regular expression that matches origin URLs to be accepted by WebSocket [$GOTTY_WS_ORIGIN]
@@ -206,6 +207,8 @@ PUT    /api/sessions/:id/title     rename a session (persisted in the record)
 DELETE /api/sessions/:id           destroy a session
 POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
+GET    /api/title                  deployment page title (browser tab; "" = unset)
+PUT    /api/title                  set the page title {"title": "..."}
 ```
 
 `POST /api/sessions` 接受可选的客户端 id(16 位 base36):存活的 id 返回

@@ -92,3 +92,21 @@ export async function destroySession(id: string): Promise<void> {
         // 会话可能已经不存在
     }
 }
+
+// getPageTitle 读取部署级页面标题(设置弹窗保存、服务端持久化,
+// 展示在浏览器标签页上;空字符串 = 未设置)。
+export async function getPageTitle(): Promise<string> {
+    const data = await fetchJSON<{ title: string }>('/api/title');
+    return data.title || '';
+}
+
+// setPageTitle 保存页面标题,返回服务端规范化后的值(trim/截断)。
+// 传空字符串清除设置,页面标题回退默认。
+export async function setPageTitle(title: string): Promise<string> {
+    const data = await fetchJSON<{ title: string }>('/api/title', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+    });
+    return data.title || '';
+}

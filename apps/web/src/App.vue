@@ -14,12 +14,13 @@
       @settings="settingsOpen = true"
     />
 
-    <!-- 设置弹窗(收纳主题 + 语言切换) -->
+    <!-- 设置弹窗(收纳主题 + 语言 + 页面标题) -->
     <SettingsModal
       :open="settingsOpen"
       :theme="theme"
       @close="settingsOpen = false"
       @theme="onThemeSelect"
+      @title-saved="onPageTitleSaved"
     />
 
     <!-- 内容区:常驻视图(每会话一个,懒创建,v-show 显隐,连接保持) -->
@@ -58,7 +59,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import TabBar from './components/TabBar.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import SettingsModal from './components/SettingsModal.vue'
-import { createSession, checkSessions, type SessionInfo } from './utils/api'
+import { createSession, checkSessions, getPageTitle, type SessionInfo } from './utils/api'
 import { applyTheme, currentTheme, notifyThemeChange, type Theme } from './utils/theme'
 import { t } from './utils/i18n'
 import {
@@ -84,6 +85,12 @@ function onThemeSelect(next: Theme) {
     applyTheme(next)
     notifyThemeChange(next)
     theme.value = next
+}
+
+// 页面标题:设置弹窗保存成功后应用为浏览器标签页标题;
+// 空值恢复默认(index.html 的 <title>GoTTY</title>)。
+function onPageTitleSaved(title: string) {
+    document.title = title || 'GoTTY'
 }
 
 function resetLatency() {
@@ -210,6 +217,15 @@ function destroyFromTab(s: SessionInfo) {
 // 启动:读清单 → status 批量查 → 打开最近存活(lastSeen 最大);
 // 清单为空(新设备/已被清空)不自动创建会话,停在空态卡片,由用户点击创建。
 onMounted(async () => {
+    // 应用服务端保存的部署级页面标题(浏览器标签页);
+    // 失败静默(旧版本服务端无此接口或暂不可用)。
+    try {
+        const title = await getPageTitle()
+        if (title) document.title = title
+    } catch {
+        // 忽略
+    }
+
     try {
         entries.value = loadManifest()
 

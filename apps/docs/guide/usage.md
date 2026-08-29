@@ -57,6 +57,7 @@ curl -X POST localhost:9049/api/sessions -d '{"command": "top"}'   # 显式命�
 | `--max-session` | 最大并发会话数（默认 0 = 不限） |
 | `--timeout` | 空闲会话销毁超时秒数（0 = 禁用） |
 | `--session-file` | 会话记录持久化文件（默认 `~/.gotty/sessions.json`，空 = 关闭） |
+| `--title-file` | 页面标题持久化文件（默认 `~/.gotty/title.json`，空 = 仅内存） |
 | `--width, --height` | 固定终端尺寸（0 = 跟随浏览器窗口） |
 | `--ws-origin` | WebSocket 来源校验正则 |
 | `--title-format` | 页面标题格式，支持模板变量（见下） |
@@ -106,6 +107,8 @@ PUT    /api/sessions/:id/title     设置显示名（持久化到记录）
 DELETE /api/sessions/:id           销毁会话
 POST   /api/sessions/:id/resize    调整终端尺寸
 POST   /api/sessions/:id/signal    发送信号（SIGINT/SIGTERM/SIGKILL/SIGHUP/SIGQUIT）
+GET    /api/title                  部署级页面标题（浏览器标签页；空 = 未设置）
+PUT    /api/title                  设置页面标题 {"title": "..."}（持久化）
 ```
 
 服务端**不提供会话列表**端点：清单在客户端 localStorage，服务端只按

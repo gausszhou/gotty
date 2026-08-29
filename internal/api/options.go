@@ -18,6 +18,10 @@ type Options struct {
 	// SessionFile persists the session history (restart-safe). Empty disables it.
 	SessionFile string `json:"session_file" flagName:"session-file" flagDescribe:"File path to persist session history (empty disables, default: ~/.gotty/sessions.json)" default:"~/.gotty/sessions.json"`
 
+	// TitleFile persists the deployment-wide page title (browser tab title,
+	// set from the settings dialog). Empty disables persistence (memory only).
+	TitleFile string `json:"title_file" flagName:"title-file" flagDescribe:"File path to persist the page title (empty disables, default: ~/.gotty/title.json)" default:"~/.gotty/title.json"`
+
 	// LogFile writes the server log to a file (in addition to the console).
 	// Empty means console only.
 	LogFile string `json:"log_file" flagName:"log-file" flagDescribe:"Server log file path (empty = console only, default: ~/.gotty/logs/gotty.log)" default:"~/.gotty/logs/gotty.log"`

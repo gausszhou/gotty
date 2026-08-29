@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -554,5 +555,104 @@ func TestSessionStatusBatch(t *testing.T) {
 	}
 	if _, ok := st.Sessions["dead000000000000"]; ok {
 		t.Fatal("dead id must not be reported")
+	}
+}
+
+// getTitle fetches GET /api/title and returns the decoded title.
+func getTitle(t *testing.T, ts *httptest.Server) string {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/api/title")
+	if err != nil {
+		t.Fatalf("failed to GET /api/title: %s", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status for GET /api/title: %d", resp.StatusCode)
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode GET /api/title response: %s", err)
+	}
+	return body.Title
+}
+
+// putTitle sends PUT /api/title and expects the given status; the decoded
+// title is returned when status == OK.
+func putTitle(t *testing.T, ts *httptest.Server, body string, wantStatus int) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/api/title", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to build PUT /api/title request: %s", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to PUT /api/title: %s", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("unexpected status for PUT /api/title: %d (want %d)", resp.StatusCode, wantStatus)
+	}
+	var result struct {
+		Title string `json:"title"`
+	}
+	if wantStatus == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode PUT /api/title response: %s", err)
+		}
+	}
+	return result.Title
+}
+
+func TestPageTitleUnsetByDefault(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	if got := getTitle(t, ts); got != "" {
+		t.Fatalf("expected empty page title by default, got %q", got)
+	}
+}
+
+func TestPageTitleRoundTrip(t *testing.T) {
+	titleFile := filepath.Join(t.TempDir(), "title.json")
+	ts, _ := newTestServer(t, func(o *Options) { o.TitleFile = titleFile })
+
+	// 保存:值会被 trim,并原样返回
+	if got := putTitle(t, ts, `{"title":"  我的终端室  "}`, http.StatusOK); got != "我的终端室" {
+		t.Fatalf("expected trimmed title, got %q", got)
+	}
+	if got := getTitle(t, ts); got != "我的终端室" {
+		t.Fatalf("expected saved title, got %q", got)
+	}
+
+	// 空值 = 清除
+	if got := putTitle(t, ts, `{"title":""}`, http.StatusOK); got != "" {
+		t.Fatalf("expected empty title after clear, got %q", got)
+	}
+	if got := getTitle(t, ts); got != "" {
+		t.Fatalf("expected empty page title after clear, got %q", got)
+	}
+
+	// 超长被截断到 maxPageTitleLen
+	long := strings.Repeat("x", maxPageTitleLen+50)
+	if got := putTitle(t, ts, `{"title":"`+long+`"}`, http.StatusOK); len(got) != maxPageTitleLen {
+		t.Fatalf("expected title truncated to %d chars, got %d", maxPageTitleLen, len(got))
+	}
+
+	// 非法 JSON → 400
+	putTitle(t, ts, `not json`, http.StatusBadRequest)
+}
+
+func TestPageTitlePersistsAcrossRestart(t *testing.T) {
+	titleFile := filepath.Join(t.TempDir(), "title.json")
+
+	ts1, _ := newTestServer(t, func(o *Options) { o.TitleFile = titleFile })
+	putTitle(t, ts1, `{"title":"ops console"}`, http.StatusOK)
+	ts1.Close()
+
+	// 新实例加载同一文件:标题仍在
+	ts2, _ := newTestServer(t, func(o *Options) { o.TitleFile = titleFile })
+	if got := getTitle(t, ts2); got != "ops console" {
+		t.Fatalf("expected persisted title after restart, got %q", got)
 	}
 }

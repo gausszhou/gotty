@@ -27,6 +27,7 @@ type Server struct {
 	options *Options
 
 	titleTemplate *noesctmpl.Template
+	titleStore    *TitleStore
 
 	wsOriginMatcher *regexp.Regexp
 
@@ -59,6 +60,7 @@ func New(manager *session.Manager, options *Options) (*Server, error) {
 		manager:         manager,
 		options:         options,
 		titleTemplate:   titleTemplate,
+		titleStore:      NewTitleStore(options.TitleFile),
 		wsOriginMatcher: originMatcher,
 	}, nil
 }
@@ -162,6 +164,8 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 //	DELETE /api/sessions/{id}       destroy session
 //	POST /api/sessions/{id}/resize
 //	POST /api/sessions/{id}/signal
+//	GET  /api/title                 deployment-wide page title (browser tab)
+//	PUT  /api/title                 save the page title {"title": "..."}
 //	GET  /ws                        WebSocket(多会话复用,协议见 docs/ws-multiplex.md)
 //
 // 注意:会话列表不再由服务端提供(客户端 localStorage 清单是列表来源),
@@ -183,6 +187,10 @@ func (server *Server) setupHandlers() http.Handler {
 	apiMux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/resize", server.handleResizeSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/signal", server.handleSignalSession)
+
+	// REST API — deployment-wide page title
+	apiMux.HandleFunc("GET /api/title", server.handleGetTitle)
+	apiMux.HandleFunc("PUT /api/title", server.handlePutTitle)
 
 	// Site — vite build 产物(仅根路径;未知路径 404)
 	apiMux.HandleFunc("GET /{$}", server.handleIndex)

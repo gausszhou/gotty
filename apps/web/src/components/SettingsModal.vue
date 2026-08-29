@@ -51,6 +51,29 @@
               >English</button>
             </div>
           </div>
+
+          <!-- 页面标题:部署级设置,服务端持久化,显示在浏览器标签页 -->
+          <div class="settings-section">
+            <div class="settings-label">{{ t('settings.pageTitle') }}</div>
+            <div class="title-row">
+              <input
+                v-model="titleDraft"
+                class="title-input"
+                type="text"
+                maxlength="200"
+                :placeholder="t('settings.pageTitlePlaceholder')"
+                @keydown.enter="saveTitle"
+              />
+              <button
+                class="option-btn option-btn-save"
+                :disabled="savingTitle"
+                @click="saveTitle"
+              >{{ t('settings.save') }}</button>
+            </div>
+            <div v-if="titleStatus" class="title-status" :class="titleStatusOk ? 'title-ok' : 'title-err'">
+              {{ titleStatus }}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -58,7 +81,9 @@
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { lang, setLang, t } from '../utils/i18n'
+import { getPageTitle, setPageTitle } from '../utils/api'
 import type { Theme } from '../utils/theme'
 
 const props = defineProps<{
@@ -72,6 +97,8 @@ const emit = defineEmits<{
     (e: 'close'): void
     // 请求切换主题(目标主题),App 负责 applyTheme + notifyThemeChange
     (e: 'theme', theme: Theme): void
+    // 页面标题已保存(服务端规范化后的值),App 负责应用 document.title
+    (e: 'title-saved', title: string): void
 }>()
 
 function close() {
@@ -86,6 +113,45 @@ function selectTheme(theme: Theme) {
 // 选择语言:setLang 是全局响应式状态,界面文案即时更新
 function selectLang(l: 'zh' | 'en') {
     if (l !== lang.value) setLang(l)
+}
+
+// ── 页面标题 ──
+const titleDraft = ref('')
+const savingTitle = ref(false)
+const titleStatus = ref('')
+const titleStatusOk = ref(true)
+
+// 每次打开弹窗时拉取服务端当前值作为草稿;拉取失败静默(按未设置处理)
+watch(
+    () => props.open,
+    async (open) => {
+        if (!open) return
+        titleDraft.value = ''
+        titleStatus.value = ''
+        try {
+            titleDraft.value = await getPageTitle()
+        } catch {
+            // 服务端不可用/旧版本:忽略
+        }
+    },
+)
+
+// 保存:PUT 到服务端(部署级持久化),成功后上报 App 应用 document.title
+async function saveTitle() {
+    if (savingTitle.value) return
+    savingTitle.value = true
+    titleStatus.value = ''
+    try {
+        const saved = await setPageTitle(titleDraft.value.trim())
+        emit('title-saved', saved)
+        titleStatusOk.value = true
+        titleStatus.value = t('settings.saved')
+    } catch {
+        titleStatusOk.value = false
+        titleStatus.value = t('settings.saveFailed')
+    } finally {
+        savingTitle.value = false
+    }
 }
 </script>
 
@@ -191,5 +257,60 @@ function selectLang(l: 'zh' | 'en') {
     background: var(--bg-tab-active);
     border-color: var(--accent);
     color: var(--fg-bright);
+}
+
+.option-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* ── 页面标题:输入框 + 保存 ── */
+.title-row {
+    display: flex;
+    gap: 8px;
+}
+
+.title-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-tab);
+    border-radius: 4px;
+    color: var(--fg);
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.4;
+}
+
+.title-input::placeholder {
+    color: var(--fg-hint);
+}
+
+.title-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.option-btn-save {
+    flex: 0 0 auto;
+    height: 30px;
+    padding: 0 14px;
+}
+
+.title-status {
+    font-size: 12px;
+    /* 固定行高:避免中英文切换时弹窗高度/位置跳动 */
+    line-height: 1.4;
+    margin-top: 6px;
+}
+
+.title-ok {
+    color: var(--net-good);
+}
+
+.title-err {
+    color: var(--net-bad);
 }
 </style>
