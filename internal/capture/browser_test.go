@@ -4,7 +4,7 @@
 // 带 `browser_e2e` 标签,默认 `go test ./...`(CI 单测)不含本文件;
 // 本机需有 Chrome/Chromium 时用 `go test -tags browser_e2e ./internal/capture/`
 // 或 `make test-browser` 运行。这类测试对 Chrome 启动耗时敏感,不宜进 CI。
-package capture
+package capture_test
 
 import (
 	"bytes"
@@ -16,7 +16,38 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/gausszhou/gotty/internal/api"
+	"github.com/gausszhou/gotty/internal/capture"
 )
+
+// newBrowserTestServer boots an ephemeral gotty server for the browser
+// engine and registers its shutdown.
+func newBrowserTestServer(t *testing.T) string {
+	t.Helper()
+	base, shutdown, err := api.NewEmbeddedServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shutdown)
+	return base
+}
+
+// testPNGBytes builds a solid-color PNG (mirrors the helper in capture).
+func testPNGBytes(t *testing.T, w, h int, c color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
 
 // findChrome locates a usable Chrome/Chromium binary for the browser engine.
 func findChrome() string {
@@ -39,8 +70,9 @@ func TestBrowserEngineText(t *testing.T) {
 	if chrome == "" {
 		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
 	}
+	base := newBrowserTestServer(t)
 
-	res, err := RunBrowser(BrowserOptions{
+	res, err := capture.RunBrowser(base, capture.BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'browser engine works'"},
 		Cols:        60,
@@ -52,7 +84,7 @@ func TestBrowserEngineText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StopReason != StopExit {
+	if res.StopReason != capture.StopExit {
 		t.Errorf("stop reason = %s, want exit", res.StopReason)
 	}
 	if len(res.PNG) < 8 || res.PNG[0] != 0x89 || res.PNG[1] != 'P' {
@@ -84,13 +116,14 @@ func TestBrowserEngineIIPImage(t *testing.T) {
 	if chrome == "" {
 		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
 	}
+	base := newBrowserTestServer(t)
 
 	raw := testPNGBytes(t, 18, 18, color.RGBA{R: 255, G: 0, B: 0, A: 255})
 	name := base64.StdEncoding.EncodeToString([]byte("px.png"))
 	seq := fmt.Sprintf("\033]1337;File=name=%s;size=%d;inline=1:%s\007",
 		name, len(raw), base64.StdEncoding.EncodeToString(raw))
 
-	res, err := RunBrowser(BrowserOptions{
+	res, err := capture.RunBrowser(base, capture.BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", fmt.Sprintf("printf '%s'", seq)},
 		Cols:        40,
@@ -118,8 +151,9 @@ func TestBrowserEngineMarker(t *testing.T) {
 	if chrome == "" {
 		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
 	}
+	base := newBrowserTestServer(t)
 
-	res, err := RunBrowser(BrowserOptions{
+	res, err := capture.RunBrowser(base, capture.BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'quick marker'; sleep 2"},
 		Cols:        40,
@@ -132,7 +166,7 @@ func TestBrowserEngineMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StopReason != StopMarker {
+	if res.StopReason != capture.StopMarker {
 		t.Errorf("stop reason = %s, want marker", res.StopReason)
 	}
 }
@@ -142,12 +176,13 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 	if chrome == "" {
 		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
 	}
+	base := newBrowserTestServer(t)
 
 	// 命令必须存活到页面附着之后:慢速 CI 上 Chrome 冷启动可达数秒,
 	// 若命令先退出,exit 判定会先于 quiet 触发,测试就变成环境敏感的。
 	// `sleep 10` 给出远超任何合理启动时间的窗口;quiet 在收到 'a' 后
 	// 静默 150ms 即触发(0.4s lull 内),远早于 10s 后的 'b'/退出。
-	res, err := RunBrowser(BrowserOptions{
+	res, err := capture.RunBrowser(base, capture.BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'a'; sleep 0.4; printf 'b'; sleep 10"},
 		Cols:        40,
@@ -159,7 +194,7 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StopReason != StopQuiet {
+	if res.StopReason != capture.StopQuiet {
 		t.Errorf("stop reason = %s, want quiet", res.StopReason)
 	}
 	// quiet 在进程仍在运行(退出约 10.4s)时就应触发,证明判定对象是
@@ -168,5 +203,3 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 		t.Errorf("quiet should trigger while the process is still running (took %v)", res.Duration)
 	}
 }
-
-var _ = image.Rect // silence unused import when image pkg not otherwise used

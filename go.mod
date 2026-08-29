@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/NYTimes/gziphandler v1.1.1
+	github.com/chromedp/chromedp v0.16.0
 	github.com/coder/websocket v1.8.12
 	github.com/creack/pty v1.1.24
 	github.com/mattn/go-runewidth v0.0.28
@@ -14,7 +15,6 @@ require (
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f // indirect
-	github.com/chromedp/chromedp v0.16.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect

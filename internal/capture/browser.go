@@ -7,15 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/chromedp/chromedp"
 
-	"github.com/gausszhou/gotty/internal/api"
-	"github.com/gausszhou/gotty/internal/session"
 	"github.com/gausszhou/gotty/internal/utils"
 )
 
@@ -62,10 +59,14 @@ type BrowserResult struct {
 // RunBrowser renders the command through the real gotty web terminal in a
 // headless Chrome and screenshots the terminal element: pixel-perfect text
 // (real fonts, CJK, emoji) and graphics-protocol images, at the cost of a
-// Chromium dependency and seconds of runtime. It runs an ephemeral gotty
-// server bound to 127.0.0.1, drives the `/#/capture/:sid` render page, and
-// cleans the session up afterwards.
-func RunBrowser(opts BrowserOptions) (*BrowserResult, error) {
+// Chromium dependency and seconds of runtime.
+//
+// base is the URL of a running gotty server (127.0.0.1), typically an
+// ephemeral one booted by the caller — cmd/capture.go or the e2e tests —
+// via api.NewEmbeddedServer; capture itself must not import api/session
+// (the session layer's screen mirror depends on capture, and a
+// capture → api/session edge would create an import cycle).
+func RunBrowser(base string, opts BrowserOptions) (*BrowserResult, error) {
 	cols, rows := opts.Cols, opts.Rows
 	if cols <= 0 {
 		cols = 120
@@ -80,43 +81,10 @@ func RunBrowser(opts BrowserOptions) (*BrowserResult, error) {
 		opts.Timeout = 30 * time.Second
 	}
 
-	// 1) 进程内临时 gotty server(只绑本机;会话管理在进程内)
-	mgr := session.NewManager()
-	apiSrv, err := api.New(mgr, &api.Options{
-		Address:     "127.0.0.1",
-		Port:        "0",
-		PermitWrite: false,
-		TitleFormat: "GoTTY capture",
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// 不启动管理器的清扫循环(DestroyExpired):它会在一秒内把命令进程
-	// 已退出的会话移出注册表。浏览器引擎恰恰要支持"进程退出后再附着"——
-	// 命令通常在 headless Chrome 冷启动(数秒)完成前就执行完了,页面随后
-	// 才 GET /api/sessions/:id 并附着 WS;环形缓冲 + bridge 重放让已退出
-	// 的会话依然可附着、可重放输出,清扫器却会让页面拿到 404。
-	// 临时 server 单会话、由下方的 defer deleteRemoteSession 显式清理,
-	// 无需周期性清扫;真实 serve 的清扫语义不受影响。
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	httpSrv := &http.Server{Handler: apiSrv.SetupHandlers()}
-	go func() { _ = httpSrv.Serve(listener) }()
-	defer func() {
-		_ = httpSrv.Close()
-		_ = listener.Close()
-	}()
-
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-
-	// 2) 创建(或复用)会话
+	// 1) 创建(或复用)会话
 	sid := opts.SessionID
 	if sid == "" {
 		sid = utils.RandomString(16)

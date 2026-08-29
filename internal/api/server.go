@@ -188,6 +188,11 @@ func (server *Server) setupHandlers() http.Handler {
 	apiMux.HandleFunc("POST /api/sessions/{id}/resize", server.handleResizeSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/signal", server.handleSignalSession)
 
+	// REST API — agent driving (backed by the screen mirror)
+	apiMux.HandleFunc("GET /api/sessions/{id}/screen", server.handleGetScreen)
+	apiMux.HandleFunc("POST /api/sessions/{id}/wait", server.handleWaitSession)
+	apiMux.HandleFunc("POST /api/sessions/{id}/keys", server.handleKeys)
+
 	// REST API — deployment-wide page title
 	apiMux.HandleFunc("GET /api/title", server.handleGetTitle)
 	apiMux.HandleFunc("PUT /api/title", server.handlePutTitle)
