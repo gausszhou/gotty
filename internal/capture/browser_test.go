@@ -137,9 +137,13 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
 	}
 
+	// 命令必须存活到页面附着之后:慢速 CI 上 Chrome 冷启动可达数秒,
+	// 若命令先退出,exit 判定会先于 quiet 触发,测试就变成环境敏感的。
+	// `sleep 10` 给出远超任何合理启动时间的窗口;quiet 在收到 'a' 后
+	// 静默 150ms 即触发(0.4s lull 内),远早于 10s 后的 'b'/退出。
 	res, err := RunBrowser(BrowserOptions{
 		Command:     "/bin/sh",
-		Args:        []string{"-c", "printf 'a'; sleep 0.4; printf 'b'; sleep 2"},
+		Args:        []string{"-c", "printf 'a'; sleep 0.4; printf 'b'; sleep 10"},
 		Cols:        40,
 		Rows:        10,
 		WaitMs:      150,
@@ -152,8 +156,10 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 	if res.StopReason != StopQuiet {
 		t.Errorf("stop reason = %s, want quiet", res.StopReason)
 	}
-	if res.Duration > 2*time.Second {
-		t.Errorf("quiet should trigger before the second printf (took %v)", res.Duration)
+	// quiet 在进程仍在运行(退出约 10.4s)时就应触发,证明判定对象是
+	// "静默"而非"退出";9s 上界给慢启动留足余量(附着 < ~8.4s 即可)。
+	if res.Duration > 9*time.Second {
+		t.Errorf("quiet should trigger while the process is still running (took %v)", res.Duration)
 	}
 }
 

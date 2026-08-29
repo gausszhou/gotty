@@ -188,14 +188,6 @@ loop:
 			result.StopReason = StopTimeout
 			break loop
 		case <-poll.C:
-			exited, err := sessionExited(ctx, base, sid)
-			if err != nil {
-				return nil, err
-			}
-			if exited {
-				result.StopReason = StopExit
-				break loop
-			}
 			var activity int64
 			var tail string
 			if err := chromedp.Run(pageCtx,
@@ -204,8 +196,20 @@ loop:
 			); err != nil {
 				return nil, err
 			}
+			// marker 先于退出判定:捕获对象是屏幕内容——即便进程在页面
+			// 附着前就已退出,重放出来的输出同样包含 marker。慢速 Chrome
+			// 冷启动下命令常在附着前结束,先查退出会让 marker 场景错误
+			// 返回 exit(CI 上 TestBrowserEngineMarker 的确定性失败)。
 			if opts.Marker != "" && strings.Contains(tail, opts.Marker) {
 				result.StopReason = StopMarker
+				break loop
+			}
+			exited, err := sessionExited(ctx, base, sid)
+			if err != nil {
+				return nil, err
+			}
+			if exited {
+				result.StopReason = StopExit
 				break loop
 			}
 			if opts.WaitMs > 0 && activity > 0 &&
