@@ -1,4 +1,4 @@
-// 轻量国际化:跟随浏览器语言(zh/en),右上角可手动切换并持久化。
+// 轻量国际化:跟随浏览器语言(zh/en),设置弹窗内可手动切换并持久化。
 // 不引入 vue-i18n 依赖:一个 reactive lang ref + 字典即可满足界面文案。
 import { ref } from 'vue'
 
@@ -10,10 +10,14 @@ const messages: Record<Lang, Record<string, string>> = {
     zh: {
         'tab.new': '新建会话',
         'tab.destroy': '销毁会话',
-        'theme.toLight': '切换到亮色主题',
-        'theme.toDark': '切换到暗色主题',
         'tab.latency': '往返延迟(RTT),每 2 秒刷新',
-        'lang.toggle': '切换界面语言',
+        'settings.open': '打开设置',
+        'settings.close': '关闭',
+        'settings.title': '设置',
+        'settings.theme': '主题',
+        'settings.dark': '深色',
+        'settings.light': '浅色',
+        'settings.language': '语言',
         'empty.title': '创建终端会话',
         'empty.hint': '点击新建一个终端',
         'empty.loading': '正在连接…',
@@ -26,10 +30,14 @@ const messages: Record<Lang, Record<string, string>> = {
     en: {
         'tab.new': 'New session',
         'tab.destroy': 'Destroy session',
-        'theme.toLight': 'Switch to light theme',
-        'theme.toDark': 'Switch to dark theme',
         'tab.latency': 'Round-trip latency (RTT), refreshed every 2s',
-        'lang.toggle': 'Switch UI language',
+        'settings.open': 'Open settings',
+        'settings.close': 'Close',
+        'settings.title': 'Settings',
+        'settings.theme': 'Theme',
+        'settings.dark': 'Dark',
+        'settings.light': 'Light',
+        'settings.language': 'Language',
         'empty.title': 'Create terminal session',
         'empty.hint': 'Click to open a new terminal',
         'empty.loading': 'Connecting…',

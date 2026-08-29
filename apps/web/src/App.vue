@@ -5,14 +5,21 @@
       :entries="entries"
       :alive="aliveSessions"
       :connected="connected"
-      :theme="theme"
       :active-session-id="activeSession?.id"
       :latency="activeSession ? latency : null"
       @open="openSession"
       @destroy="destroyFromTab"
       @create="createNewSession"
       @changed="refreshStatus"
-      @theme="onToggleTheme"
+      @settings="settingsOpen = true"
+    />
+
+    <!-- 设置弹窗(收纳主题 + 语言切换) -->
+    <SettingsModal
+      :open="settingsOpen"
+      :theme="theme"
+      @close="settingsOpen = false"
+      @theme="onThemeSelect"
     />
 
     <!-- 内容区:常驻视图(每会话一个,懒创建,v-show 显隐,连接保持) -->
@@ -50,8 +57,9 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import TabBar from './components/TabBar.vue'
 import TerminalPane from './components/TerminalPane.vue'
+import SettingsModal from './components/SettingsModal.vue'
 import { createSession, checkSessions, type SessionInfo } from './utils/api'
-import { currentTheme, toggleTheme, type Theme } from './utils/theme'
+import { applyTheme, currentTheme, notifyThemeChange, type Theme } from './utils/theme'
 import { t } from './utils/i18n'
 import {
     loadManifest, upsertManifest, touchManifest, removeFromManifest, generateSessionID, findManifestEntry,
@@ -66,12 +74,16 @@ const bootError = ref('')
 // boot 进行中:内容区显示连接占位,避免空态卡片在恢复会话前一闪而过
 const booting = ref(true)
 // 当前主题(dark/light);main.ts 已在 mount 前应用持久化主题,
-// 这里用 currentTheme() 同步初值,保证图标与实际主题一致。
+// 这里用 currentTheme() 同步初值,供设置弹窗高亮当前项。
 const theme = ref<Theme>(currentTheme())
+// 设置弹窗可见性(右上角 ⚙ 打开,收纳主题 + 语言切换)
+const settingsOpen = ref(false)
 
-// 主题切换:TabBar 触发,切换 CSS 变量并广播给 xterm
-function onToggleTheme() {
-    theme.value = toggleTheme()
+// 主题切换:设置弹窗选择目标主题,切换 CSS 变量并广播给 xterm
+function onThemeSelect(next: Theme) {
+    applyTheme(next)
+    notifyThemeChange(next)
+    theme.value = next
 }
 
 function resetLatency() {

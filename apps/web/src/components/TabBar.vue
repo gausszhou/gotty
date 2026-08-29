@@ -16,7 +16,7 @@
       <button class="tab-close" :title="t('tab.destroy')" @click.stop="destroy(item.session)">✕</button>
     </div>
 
-    <!-- 右侧:网络状态 + 语言/主题切换 -->
+    <!-- 右侧:网络状态 + 设置(主题/语言收纳在设置弹窗内) -->
     <div class="tab-actions">
       <div
         v-if="latency != null"
@@ -27,19 +27,10 @@
         {{ latency }}ms
       </div>
       <button
-        class="lang-switch"
-        :title="t('lang.toggle')"
-        @click="toggleLang"
-      >
-        <span class="lang-item" :class="{ active: lang === 'zh' }">中</span>
-        <span class="lang-sep">/</span>
-        <span class="lang-item" :class="{ active: lang === 'en' }">En</span>
-      </button>
-      <button
         class="icon-btn"
-        :title="theme === 'light' ? t('theme.toLight') : t('theme.toDark')"
-        @click="toggle"
-      >{{ theme === 'light' ? '☾' : '☀' }}</button>
+        :title="t('settings.open')"
+        @click="emit('settings')"
+      >⚙</button>
     </div>
   </div>
 </template>
@@ -48,7 +39,7 @@
 import { computed } from 'vue'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
-import { toggleLang, t, lang } from '../utils/i18n'
+import { t } from '../utils/i18n'
 import { logger } from '../utils/logger'
 
 const props = defineProps<{
@@ -58,8 +49,6 @@ const props = defineProps<{
     alive: SessionInfo[]
     // 本设备各打开视图的 WS 连接状态(id → 已附着),圆点即时变绿
     connected?: Record<string, boolean>
-    // 当前主题(驱动 ☾/☀ 图标)
-    theme?: string
     activeSessionId?: string
     // 当前激活会话的实测 RTT(毫秒),展示在标题栏(顶部栏)右侧,颜色按延迟分级。
     latency?: number | null
@@ -79,16 +68,11 @@ const emit = defineEmits<{
     (e: 'destroy', session: SessionInfo): void
     // 请求新建会话(创建逻辑在上层 App 统一,顶部 ＋ 与空态卡片共用)
     (e: 'create'): void
-    // 请求切换亮/暗主题(applyTheme + 广播在上层 App)
-    (e: 'theme'): void
+    // 请求打开设置弹窗(主题 + 语言,由 App 统一管理)
+    (e: 'settings'): void
     // 清单/存活状态已改变,请求上层重新拉取
     (e: 'changed'): void
 }>()
-
-// 主题切换按钮 → App 处理(toggleTheme + notify)
-function toggle() {
-    emit('theme')
-}
 
 const entryById = computed(() => new Map(props.entries.map((e) => [e.id, e])))
 
@@ -284,35 +268,5 @@ function stateClass(s: SessionInfo): string {
 .icon-btn:hover {
     background: var(--bg-tab-hover);
     color: var(--fg-bright);
-}
-
-/* 语言开关:中 / EN 分段展示,当前语言高亮,点击切换 */
-.lang-switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    background: none;
-    border: none;
-    font-size: 14px;
-    font-family: inherit;
-    cursor: pointer;
-    padding: 2px 8px;
-    line-height: 1;
-    border-radius: 3px;
-    color: var(--fg-dim);
-}
-
-.lang-switch:hover {
-    background: var(--bg-tab-hover);
-}
-
-.lang-item.active {
-    color: #ccc;
-    font-weight: 600;
-}
-
-.lang-sep {
-    color: var(--fg-hint);
-    user-select: none;
 }
 </style>
