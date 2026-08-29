@@ -1,3 +1,9 @@
+//go:build browser_e2e
+
+// 浏览器引擎端到端测试:驱动真实 headless Chrome 渲染页面并截图。
+// 带 `browser_e2e` 标签,默认 `go test ./...`(CI 单测)不含本文件;
+// 本机需有 Chrome/Chromium 时用 `go test -tags browser_e2e ./internal/capture/`
+// 或 `make test-browser` 运行。这类测试对 Chrome 启动耗时敏感,不宜进 CI。
 package capture
 
 import (

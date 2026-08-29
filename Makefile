@@ -52,6 +52,10 @@ static: frontend
 test: vet fmt
 	go test ./...
 
+# 浏览器引擎端到端测试(需本机有 Chrome/Chromium;CI 不跑,见 ci.yml)
+test-browser:
+	go test -tags browser_e2e ./internal/capture/
+
 vet:
 	go vet ./...
 
