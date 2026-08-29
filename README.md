@@ -125,14 +125,101 @@ Unknown keys are ignored.
 > `--permit-write=false`, and protect the port with TLS (`-t`) and/or a
 > reverse proxy. Traffic is unencrypted unless TLS is enabled.
 
-# Running in the Background
+# Deployment
 
-```sh
-nohup ./build/gotty serve --log-file ~/.gotty/logs/gotty.log >/dev/null 2>&1 &
+`build/gotty` is a self-contained single binary: the web frontend is embedded
+via `go:embed`, so the only thing you ship is the executable (plus nothing —
+no Node, no assets directory).
+
+## Run as a systemd (user) service
+
+Restart-on-crash and boot startup without root. Save this unit as
+`~/.config/systemd/user/gotty.service`:
+
+```ini
+[Unit]
+Description=GoTTY web terminal server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/build/gotty serve --address 127.0.0.1 --port 9049 --log-file ~/.gotty/logs/gotty.log --session-file ~/.gotty/sessions.json
+WorkingDirectory=/path/to
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/you   # GoTTY expands "~" in the paths above itself
+
+[Install]
+WantedBy=default.target
 ```
 
-For restart-on-crash and boot startup, install a systemd (user) service;
-see the [guide](apps/docs/guide/usage.md) for the full unit.
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now gotty.service   # start now + on boot
+loginctl enable-linger $USER                  # keep running after logout
+```
+
+Then: `systemctl --user start gotty` to start, `systemctl --user status
+gotty` to inspect, `journalctl --user -u gotty.service -f` to follow logs,
+`systemctl --user restart gotty` after upgrading the binary.
+
+> Session state lives in process memory. After a restart the web UI drops
+> stale manifest entries and shows the create card; recorded sessions (id,
+> command) can still be resurrected by creating the same id again
+> (`run_count+1`).
+
+Binding GoTTY to `127.0.0.1` means only local processes can reach it — put a
+reverse proxy in front for remote access. The quick-and-dirty alternative
+(no supervision) is `nohup ./build/gotty serve ... >/dev/null 2>&1 &`.
+
+## Reverse proxy with TLS (nginx)
+
+GoTTY upgrades to WebSockets (`WS /ws?session_id=...`), so the proxy must
+forward the `Upgrade`/`Connection` headers. Example site config:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name tty.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/tty.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tty.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:9049;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400;            # long-lived WebSocket
+    }
+}
+```
+
+```sh
+sudo certbot --nginx -d tty.example.com     # obtain + auto-renew TLS
+```
+
+Instead of a proxy you can terminate TLS in GoTTY itself: `gotty serve -t`
+(default certificates `~/.gotty.crt` / `~/.gotty.key`, override with
+`--tls-crt` / `--tls-key`).
+
+## Hardening checklist
+
+- `--permit-write=false` for read-only exposure (the default is **true** —
+  anyone who can open the page can type into your sessions).
+- Keep GoTTY on `127.0.0.1` unless TLS terminates at GoTTY itself, and never
+  expose an unencrypted, write-enabled instance on `0.0.0.0`.
+- `--ws-origin '^https://tty\.example\.com$'` rejects cross-site WebSocket
+  connections from other origins.
+- Restrict which commands sessions may run by giving `serve` a fixed command
+  (e.g. `gotty serve tmux new -A -s gotty`), see
+  [Multiple Clients](#multiple-clients-one-terminal).
+- TLS every deployment: either via the proxy (above) or `-t`. See also the
+  [guide](apps/docs/guide/usage.md) for the full option reference.
 
 # Multiple Clients, One Terminal
 

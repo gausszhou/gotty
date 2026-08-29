@@ -95,14 +95,97 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 > 会话键入内容。只读部署请 `--permit-write=false`,并用 TLS(`-t`)和/或
 > 反向代理保护端口。未启用 TLS 时流量不加密。
 
-# 后台运行
+# 部署
 
-```sh
-nohup ./build/gotty serve --log-file ~/.gotty/logs/gotty.log >/dev/null 2>&1 &
+`build/gotty` 是自包含的单二进制:前端通过 `go:embed` 内嵌,交付物只有
+可执行文件本身(不需要 Node、不需要静态资源目录)。
+
+## 用 systemd(用户级)服务运行
+
+崩溃自愈 + 开机自启,免 root。把下面这个 unit 存到
+`~/.config/systemd/user/gotty.service`:
+
+```ini
+[Unit]
+Description=GoTTY web terminal server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/build/gotty serve --address 127.0.0.1 --port 9049 --log-file ~/.gotty/logs/gotty.log --session-file ~/.gotty/sessions.json
+WorkingDirectory=/path/to
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/you   # 上面路径里的 ~ 由 GoTTY 自己展开
+
+[Install]
+WantedBy=default.target
 ```
 
-崩溃自愈与开机自启请安装 systemd(用户级)服务;完整 unit 与说明见
-[指南](apps/docs/guide/usage.md)。
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now gotty.service   # 立即启动 + 开机自启
+loginctl enable-linger $USER                  # 注销后继续运行
+```
+
+日常管理:`systemctl --user start gotty` 启动、`systemctl --user status
+gotty` 查看状态、`journalctl --user -u gotty.service -f` 跟踪日志、
+升级二进制后 `systemctl --user restart gotty`。
+
+> 会话状态在进程内存里。服务重启后页面会把失效清单条目移出并停在创建
+> 卡片;有记录的会话(id、命令)仍可通过再次创建同 id 复活
+> (`run_count+1`)。
+
+把 GoTTY 绑到 `127.0.0.1` 意味着只有本机进程能访问——对外访问请在前面
+加反向代理。不想要守护的临时做法是
+`nohup ./build/gotty serve ... >/dev/null 2>&1 &`。
+
+## 反向代理 + TLS(nginx)
+
+GoTTY 会升级为 WebSocket(`WS /ws?session_id=...`),代理必须转发
+`Upgrade`/`Connection` 头。站点配置示例:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name tty.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/tty.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tty.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:9049;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400;            # 长连接 WebSocket
+    }
+}
+```
+
+```sh
+sudo certbot --nginx -d tty.example.com     # 签发 + 自动续期 TLS
+```
+
+不想用代理也可以让 GoTTY 自己终结 TLS:`gotty serve -t`(默认证书
+`~/.gotty.crt` / `~/.gotty.key`,可用 `--tls-crt` / `--tls-key` 覆盖)。
+
+## 加固清单
+
+- 只读暴露用 `--permit-write=false`(默认是 **true** —— 能打开页面的人
+  就能往你的会话里键入)。
+- 除非 TLS 由 GoTTY 自己终结,否则绑 `127.0.0.1`;绝不把未加密且可写的
+  实例暴露在 `0.0.0.0` 上。
+- `--ws-origin '^https://tty\.example\.com$'` 拒绝其他来源的跨站
+  WebSocket 连接。
+- 给 `serve` 一个固定命令来限制会话可运行的命令(如
+  `gotty serve tmux new -A -s gotty`),见[多客户端共用一个终端](#多客户端共用一个终端)。
+- 所有部署都上 TLS:走代理(上文)或 `-t`。完整选项参考见
+  [指南](apps/docs/guide/usage.md)。
 
 # 多客户端共用一个终端
 
