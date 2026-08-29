@@ -37,7 +37,13 @@ type Manager struct {
 	idleTimeout time.Duration
 	baseOpts    []terminal.Option
 	factory     TerminalFactory
+	mirrorF     MirrorFactory
 }
+
+// MirrorFactory builds the screen mirror for a new session (nil return
+// disables it). The concrete factory lives in the api layer — session
+// must not import capture, whose browser engine depends on session.
+type MirrorFactory func(term Terminal) ScreenMirror
 
 // Option configures a Manager.
 type Option func(*Manager)
@@ -83,6 +89,15 @@ func WithTerminalFactory(factory TerminalFactory) Option {
 func WithStore(store Store) Option {
 	return func(m *Manager) {
 		m.store = store
+	}
+}
+
+// WithMirrorFactory sets the per-session screen-mirror builder that
+// powers the agent-driving API (GET /screen, POST /wait). A nil factory
+// disables the mirror entirely (--mirror=false).
+func WithMirrorFactory(f MirrorFactory) Option {
+	return func(m *Manager) {
+		m.mirrorF = f
 	}
 }
 
@@ -180,7 +195,11 @@ func (m *Manager) CreateWithID(id, command string, args []string, termOpts ...te
 		return nil, false, fmt.Errorf("failed to create terminal: %w", err)
 	}
 
-	s := New(id, term)
+	var mirror ScreenMirror
+	if m.mirrorF != nil {
+		mirror = m.mirrorF(term)
+	}
+	s := New(id, term, WithScreenMirror(mirror))
 	m.sessions[s.ID()] = s
 
 	meta := Metadata{

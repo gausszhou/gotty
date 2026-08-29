@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
@@ -47,6 +48,10 @@ var (
 	ErrSessionDestroyed = errors.New("session is destroyed")
 	// ErrClientClosed indicates the client connection was closed.
 	ErrClientClosed = errors.New("client closed")
+	// ErrMirrorDisabled is returned by the screen/wait endpoints when
+	// the screen mirror is off (--mirror=false): there is no grid to
+	// read, so the agent-driving API has no data source.
+	ErrMirrorDisabled = errors.New("screen mirror disabled")
 )
 
 // AttachOptions parameterizes a single attach operation.
@@ -136,10 +141,58 @@ type Session struct {
 	// termExited is closed by outputPump once reading the PTY fails,
 	// i.e. the terminal process has gone away.
 	termExited chan struct{}
+
+	// mirror renders the session's PTY output into a screen grid (the
+	// agent-driving API: GET /screen, POST /wait). It is fed by
+	// outputPump alongside the ring; Screen/Wait snapshot it under
+	// mirrorMu. mirror is nil when the feature is disabled (--mirror=false).
+	mirrorMu   sync.Mutex
+	mirror     ScreenMirror
+	mirrorVer  uint64    // bumped per output chunk (wait uses it for change detection)
+	mirrorLast time.Time // last chunk time (wait quiet detection)
+}
+
+// ScreenMirror renders the PTY output stream into a screen grid for the
+// agent-driving API. The concrete implementation wraps capture.Emulator
+// and is injected by the api layer: the capture package's browser engine
+// depends on session, so session must not import capture (it would
+// create an import cycle).
+type ScreenMirror interface {
+	io.Writer
+	// Resize syncs the mirror grid to the PTY size.
+	Resize(cols, rows int)
+	// DrainAnswers returns and clears terminal query responses the mirror
+	// generated while parsing the output; the caller writes them back
+	// into the PTY when no browser client is attached to answer them.
+	DrainAnswers() []byte
+	// Snapshot deep-copies the current screen. Text powers wait regex
+	// matching; Raw carries the implementation's render-ready state,
+	// type-asserted by the mirror's owner (api layer: *capture.Snapshot).
+	Snapshot() ScreenSnapshot
+}
+
+// ScreenSnapshot is the session-visible view of one mirror snapshot.
+type ScreenSnapshot struct {
+	// Text is the plain-text rendering of the screen (wait regex source).
+	Text string
+	// Raw is the implementation's render-ready snapshot, opaque to the
+	// session (api layer asserts it back to *capture.Snapshot).
+	Raw interface{}
+}
+
+// SessionOption configures a Session at construction.
+type SessionOption func(*Session)
+
+// WithScreenMirror attaches the screen mirror that powers the
+// agent-driving API; nil disables the feature (--mirror=false).
+func WithScreenMirror(m ScreenMirror) SessionOption {
+	return func(s *Session) {
+		s.mirror = m
+	}
 }
 
 // New creates a Session wrapping an already-started terminal.
-func New(id string, term Terminal) *Session {
+func New(id string, term Terminal, opts ...SessionOption) *Session {
 	s := &Session{
 		id:          id,
 		term:        term,
@@ -148,6 +201,9 @@ func New(id string, term Terminal) *Session {
 		lastTouched: time.Now(),
 		out:         newRing(outputRingCapacity),
 		termExited:  make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	// A single persistent reader owns the PTY for the whole session
 	// lifetime. If the pump lived inside Attach, a detached client would
@@ -188,9 +244,103 @@ func (s *Session) State() State {
 // Exited reports whether the underlying terminal process has exited.
 func (s *Session) Exited() bool { return s.term.Exited() }
 
-// Resize resizes the underlying PTY, unless a fixed size is enforced.
+// Resize resizes the underlying PTY and syncs the mirror grid to match.
 func (s *Session) Resize(cols, rows int) error {
-	return s.term.Resize(cols, rows)
+	if err := s.term.Resize(cols, rows); err != nil {
+		return err
+	}
+	s.syncMirrorSize(cols, rows)
+	return nil
+}
+
+// syncMirrorSize resizes the mirror grid to match the PTY.
+func (s *Session) syncMirrorSize(cols, rows int) {
+	s.mirrorMu.Lock()
+	if s.mirror != nil {
+		s.mirror.Resize(cols, rows)
+	}
+	s.mirrorMu.Unlock()
+}
+
+// Screen returns a deep-copied snapshot of the rendered terminal screen
+// (the agent-driving read primitive). ErrMirrorDisabled when --mirror=false.
+func (s *Session) Screen() (*ScreenSnapshot, error) {
+	s.mirrorMu.Lock()
+	defer s.mirrorMu.Unlock()
+	if s.mirror == nil {
+		return nil, ErrMirrorDisabled
+	}
+	snap := s.mirror.Snapshot()
+	return &snap, nil
+}
+
+// Input writes raw bytes into the PTY as if typed by a client, without
+// requiring an attached connection (the agent keys API). Concurrent
+// writes (attach input / answers) are serialized by the terminal's
+// write lock, so frames never interleave.
+func (s *Session) Input(p []byte) error {
+	if s.State() == StateDestroyed {
+		return ErrSessionDestroyed
+	}
+	_, err := s.term.Write(p)
+	return err
+}
+
+// WaitResult describes why a Wait call returned.
+type WaitResult struct {
+	Matched  bool `json:"matched"`   // regex matched the screen text
+	Quiet    bool `json:"quiet"`     // output stayed silent for quiet
+	TimedOut bool `json:"timed_out"` // timeout deadline reached
+}
+
+// Wait blocks until the screen text matches regex, output stays silent
+// for quiet, or timeout elapses — whichever comes first — and returns
+// the screen at that moment. A nil regex disables matching, a zero
+// quiet disables quiet detection, a zero timeout blocks until ctx is
+// done or the terminal exits. ErrMirrorDisabled when --mirror=false.
+func (s *Session) Wait(ctx context.Context, regex *regexp.Regexp, timeout, quiet time.Duration) (*ScreenSnapshot, WaitResult, error) {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		s.mirrorMu.Lock()
+		if s.mirror == nil {
+			s.mirrorMu.Unlock()
+			return nil, WaitResult{}, ErrMirrorDisabled
+		}
+		snap := s.mirror.Snapshot()
+		lastWrite := s.mirrorLast
+		s.mirrorMu.Unlock()
+
+		if regex != nil && regex.MatchString(snap.Text) {
+			return &snap, WaitResult{Matched: true}, nil
+		}
+		if quiet > 0 && time.Since(lastWrite) >= quiet {
+			return &snap, WaitResult{Quiet: true}, nil
+		}
+		if timeout > 0 && time.Now().After(deadline) {
+			return &snap, WaitResult{TimedOut: true}, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, WaitResult{}, ctx.Err()
+		case <-s.termExited:
+			// 进程退出:屏幕定格,返回最终画面。termExited 在最后一次
+			// 输出被喂进镜像之后才关闭,最终画面就是程序最后的屏幕;
+			// 若它在退出瞬间才匹配正则,这里仍算匹配。
+			final, err := s.Screen()
+			if err != nil {
+				return nil, WaitResult{}, err
+			}
+			if regex != nil && regex.MatchString(final.Text) {
+				return final, WaitResult{Matched: true}, nil
+			}
+			return final, WaitResult{}, nil
+		case <-ticker.C:
+		}
+	}
 }
 
 // Signal sends a signal to the underlying process.
@@ -502,6 +652,22 @@ func (s *Session) outputPump() {
 		}
 		s.outMu.Unlock()
 
+		// 镜像仿真器:输出 tee 一份进屏幕网格(agent 读屏/等待的数据源)。
+		// 同时排空查询应答:无客户端附着时由我们应答(浏览器附着时 xterm
+		// 会自己应答,应答被丢弃避免双答)。
+		var answers []byte
+		s.mirrorMu.Lock()
+		if s.mirror != nil {
+			s.mirror.Write(buffer[:n])
+			s.mirrorVer++
+			s.mirrorLast = time.Now()
+			answers = s.mirror.DrainAnswers()
+		}
+		s.mirrorMu.Unlock()
+		if len(answers) > 0 && deliverTo == nil {
+			_, _ = s.term.Write(answers)
+		}
+
 		if deliverTo == nil {
 			continue
 		}
@@ -565,6 +731,7 @@ func (s *Session) masterToSlave(ctx context.Context, conn io.ReadWriter, opts At
 			if err := s.term.Resize(args.Columns, args.Rows); err != nil {
 				return fmt.Errorf("failed to resize terminal: %w", err)
 			}
+			s.syncMirrorSize(args.Columns, args.Rows)
 			// 记录最近一次成功尺寸,供恢复会话时 jitterSize 使用。
 			s.mu.Lock()
 			s.lastCols, s.lastRows = args.Columns, args.Rows
