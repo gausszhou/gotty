@@ -29,6 +29,12 @@ type Terminal struct {
 	cmd *exec.Cmd
 	pty *os.File
 
+	// writeMu serializes writes to the PTY master: attach input
+	// (masterToSlave), the agent keys API and emulator query answers
+	// all go through Write concurrently; a per-write lock keeps
+	// interleaved input from corrupting a frame.
+	writeMu sync.Mutex
+
 	// exited is closed once the process has exited and the PTY is closed.
 	exited  chan struct{}
 	waitMu  sync.Mutex
@@ -186,7 +192,16 @@ func (t *Terminal) Read(p []byte) (int, error) {
 
 // Write writes raw input to the PTY.
 func (t *Terminal) Write(p []byte) (int, error) {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 	return t.pty.Write(p)
+}
+
+// Size returns the terminal size last configured via WithInitialSize or
+// Resize. Zero values mean the size was never set explicitly (the PTY
+// then uses the platform default).
+func (t *Terminal) Size() (cols, rows int) {
+	return int(t.size.Cols), int(t.size.Rows)
 }
 
 // Resize sets the size of the PTY.
@@ -194,10 +209,8 @@ func (t *Terminal) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid terminal size: %dx%d", cols, rows)
 	}
-	return pty.Setsize(t.pty, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
-	})
+	t.size = pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
+	return pty.Setsize(t.pty, &t.size)
 }
 
 // Signal sends a signal to the process, if it is still running.
