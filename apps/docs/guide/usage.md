@@ -107,6 +107,9 @@ PUT    /api/sessions/:id/title     设置显示名（持久化到记录）
 DELETE /api/sessions/:id           销毁会话
 POST   /api/sessions/:id/resize    调整终端尺寸
 POST   /api/sessions/:id/signal    发送信号（SIGINT/SIGTERM/SIGKILL/SIGHUP/SIGQUIT）
+GET    /api/sessions/:id/screen    读取当前屏幕（?format=text|json|png，Agent 驱动）
+POST   /api/sessions/:id/wait      等待屏幕状态（{"regex": "...", "timeout_ms": 30000, "quiet_ms": 0}）
+POST   /api/sessions/:id/keys      向 PTY 注入输入（{"input": "...", "encoding": "text|base64"}）
 GET    /api/title                  部署级页面标题（浏览器标签页；空 = 未设置）
 PUT    /api/title                  设置页面标题 {"title": "..."}（持久化）
 ```
@@ -119,6 +122,21 @@ curl -X POST localhost:9049/api/sessions -d '{"command": "top", "width": 120, "h
 ```
 
 浏览器通过 `WS /ws?session_id=xxx`（子协议 `webtty`）附着到会话，收发二进制帧。
+
+### Agent 驱动（screen / wait / keys）
+
+`screen` / `wait` / `keys` 让脚本或 AI agent 无头驱动运行中的会话：
+读屏、等待正则或输出静默、注入输入，全程不需要浏览器。由默认开启的
+**屏幕镜像**支撑（`--mirror=false` 关闭后 `screen`/`wait` 返回 503）；
+无浏览器客户端时镜像还会应答终端查询（DA/DSR/DECRQM），vim 等全屏程序
+无头启动不会挂起。`keys` 遵循 `--permit-write`，只读部署下返回 403。
+
+```bash
+curl -X POST localhost:9049/api/sessions -d '{"command": "vim", "args": ["-u", "NONE"]}'
+curl -X POST localhost:9049/api/sessions/<id>/keys -d '{"input": ":q!\r"}'
+curl -X POST localhost:9049/api/sessions/<id>/wait -d '{"regex": "VIM", "timeout_ms": 5000}'
+curl "localhost:9049/api/sessions/<id>/screen?format=text"
+```
 
 ## Gotty capture — 端到端终端测试
 

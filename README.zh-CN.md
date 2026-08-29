@@ -70,6 +70,7 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
+    --mirror                Keep a screen mirror per session for the agent API (screen/wait; default: true) [$GOTTY_MIRROR]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]
@@ -207,6 +208,9 @@ PUT    /api/sessions/:id/title     rename a session (persisted in the record)
 DELETE /api/sessions/:id           destroy a session
 POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
+GET    /api/sessions/:id/screen    read the rendered screen: ?format=text (default) | json | png
+POST   /api/sessions/:id/wait      block until the screen matches: {"regex": "...", "timeout_ms": 30000, "quiet_ms": 0}
+POST   /api/sessions/:id/keys      inject input bytes into the PTY: {"input": "ls -la\r", "encoding": "text" | "base64"}
 GET    /api/title                  deployment page title (browser tab; "" = unset)
 PUT    /api/title                  set the page title {"title": "..."}
 ```
@@ -215,6 +219,23 @@ PUT    /api/title                  set the page title {"title": "..."}
 现有会话(`200` 幂等),有记录的 id **复活**(记录的 command/args,
 `run_count+1`),未知/新 id(或不带)则新建会话。没有会话列表端点——
 清单在客户端。
+
+### Agent 驱动
+
+`screen` / `wait` / `keys` 让 AI agent(或任意脚本)无头驱动运行中的会话,
+对标 `tu`:读屏、等待正则/输出静默、注入输入,全程不需要浏览器。它们由
+**会话屏幕镜像**支撑——PTY 输出 tee 进一个 VT 仿真器(默认开启;`--mirror=false`
+关闭后 `screen`/`wait` 返回 `503`)。无浏览器客户端附着时镜像还会应答终端
+查询(DA/DSR/DECRQM),因此 vim 等全屏程序无头启动不会挂起:
+
+```sh
+curl -X POST localhost:9049/api/sessions -d '{"command": "vim", "args": ["-u", "NONE"]}'
+curl -X POST localhost:9049/api/sessions/<id>/keys -d '{"input": ":q!\r"}'
+curl -X POST localhost:9049/api/sessions/<id>/wait -d '{"regex": "VIM", "timeout_ms": 5000}'
+curl "localhost:9049/api/sessions/<id>/screen?format=text"
+```
+
+`keys` 遵循 `--permit-write`:只读部署下注入输入返回 `403`。
 
 # 开发
 

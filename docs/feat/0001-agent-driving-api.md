@@ -1,6 +1,6 @@
 # 优化 1:Agent 可驱动 API —— 读屏 / 等待 / 输入注入
 
-> 状态:**待实施**(对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 调研结论)
+> 状态:**已实施**(2026-08-29;对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 调研结论)
 >
 > 背景:调研 `tu`("tmux for your coding agent")后确认,它面向 AI agent 的核心
 > 能力是**输入侧**——`type/press/mouse/wait` + 读屏截图。GoTTY 目前只覆盖了

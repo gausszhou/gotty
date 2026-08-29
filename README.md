@@ -98,6 +98,7 @@ shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-d
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
+    --mirror                Keep a screen mirror per session for the agent API (screen/wait; default: true) [$GOTTY_MIRROR]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]
@@ -242,6 +243,9 @@ PUT    /api/sessions/:id/title     rename a session (persisted in the record)
 DELETE /api/sessions/:id           destroy a session
 POST   /api/sessions/:id/resize    resize the terminal {width, height}
 POST   /api/sessions/:id/signal    send a signal {signal: "SIGINT" | "SIGHUP" | "SIGTERM" | "SIGKILL" | "SIGQUIT"}
+GET    /api/sessions/:id/screen    read the rendered screen: ?format=text (default) | json | png
+POST   /api/sessions/:id/wait      block until the screen matches: {"regex": "...", "timeout_ms": 30000, "quiet_ms": 0}
+POST   /api/sessions/:id/keys      inject input bytes into the PTY: {"input": "ls -la\r", "encoding": "text" | "base64"}
 GET    /api/title                  deployment page title (browser tab; "" = unset)
 PUT    /api/title                  set the page title {"title": "..."}
 ```
@@ -251,6 +255,27 @@ an alive id returns the existing session (`200`), a recorded id
 **resurrects** it (recorded command/args, `run_count+1`), an unknown/new id
 (or none) creates a fresh session. There is no session list endpoint — the
 list lives client-side.
+
+### Agent driving
+
+`screen` / `wait` / `keys` let an AI agent (or any script) drive a running
+session headlessly, like `tu`: read what is on screen, wait for a regex or
+for the output to settle, and type input — no browser needed. They are
+backed by a per-session screen mirror (a VT emulator tee'd from the PTY
+output, default on; disable with `--mirror=false`, which makes `screen`/
+`wait` answer `503`). The mirror also answers terminal queries (DA/DSR/
+DECRQM) when no browser client is attached, so full-screen programs like
+`vim` start without hanging:
+
+```sh
+curl -X POST localhost:9049/api/sessions -d '{"command": "vim", "args": ["-u", "NONE"]}'
+curl -X POST localhost:9049/api/sessions/<id>/keys -d '{"input": ":q!\r"}'
+curl -X POST localhost:9049/api/sessions/<id>/wait -d '{"regex": "VIM", "timeout_ms": 5000}'
+curl "localhost:9049/api/sessions/<id>/screen?format=text"
+```
+
+`keys` honors `--permit-write`: a read-only deployment rejects input with
+`403`.
 
 # Development
 
