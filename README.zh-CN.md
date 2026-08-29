@@ -71,7 +71,7 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
-    --session-file string   File path to persist session records (default: "~/.gotty.sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
+    --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --width int             Static width of the screen, 0(default) means dynamically resize [$GOTTY_WIDTH]
     --height int            Static height of the screen, 0(default) means dynamically resize [$GOTTY_HEIGHT]
     --ws-origin string      A regular expression that matches origin URLs to be accepted by WebSocket [$GOTTY_WS_ORIGIN]

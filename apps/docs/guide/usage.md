@@ -56,7 +56,7 @@ curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'   # 显式命�
 | `--reconnect` | 启用客户端断线重连（`--reconnect-time` 控制间隔, 默认 10） |
 | `--max-session` | 最大并发会话数（默认 0 = 不限） |
 | `--timeout` | 空闲会话销毁超时秒数（0 = 禁用） |
-| `--session-file` | 会话记录持久化文件（默认 `~/.gotty.sessions.json`，空 = 关闭） |
+| `--session-file` | 会话记录持久化文件（默认 `~/.gotty/sessions.json`，空 = 关闭） |
 | `--width, --height` | 固定终端尺寸（0 = 跟随浏览器窗口） |
 | `--ws-origin` | WebSocket 来源校验正则 |
 | `--title-format` | 页面标题格式，支持模板变量（见下） |

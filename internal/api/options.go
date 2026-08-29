@@ -16,7 +16,7 @@ type Options struct {
 	Timeout int `json:"timeout" flagName:"timeout" flagDescribe:"Idle timeout seconds for destroying unattached sessions (0 to disable)" default:"900"`
 
 	// SessionFile persists the session history (restart-safe). Empty disables it.
-	SessionFile string `json:"session_file" flagName:"session-file" flagDescribe:"File path to persist session history (empty disables, default: ~/.gotty.sessions.json)" default:"~/.gotty.sessions.json"`
+	SessionFile string `json:"session_file" flagName:"session-file" flagDescribe:"File path to persist session history (empty disables, default: ~/.gotty/sessions.json)" default:"~/.gotty/sessions.json"`
 
 	// LogFile writes the server log to a file (in addition to the console).
 	// Empty means console only.
