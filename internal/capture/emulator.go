@@ -184,6 +184,7 @@ const gfxBufLimit = 16 << 20
 type csiData struct {
 	priv     bool   // '?' private prefix seen
 	paramStr []byte // digits, ';' and ':' between priv/params and final
+	inter    []byte // intermediate bytes (0x20-0x3E, e.g. '$' DECRQM, '>' DA2)
 	final    byte
 }
 
@@ -231,6 +232,15 @@ type Emulator struct {
 	oscBuf, dcsBuf, apcBuf    []byte
 	oscFull, dcsFull, apcFull bool
 
+	// answers holds responses to terminal queries (DSR/DA/DECRQM) until
+	// the caller drains them with DrainAnswers and writes them back into
+	// the PTY. Queries must be answered or full-screen programs (vim,
+	// htop, mc) hang on startup waiting for a reply. answersCap bounds
+	// the buffer as a safety net against query spam; drains happen every
+	// output chunk, so the cap is rarely hit.
+	answers    []byte
+	answersCap int
+
 	state    parseState
 	csi      csiData
 	utf8Buf  [utf8.UTFMax]byte
@@ -255,8 +265,79 @@ func NewEmulator(cols, rows int) *Emulator {
 		scrollBottom:  rows - 1,
 		cellW:         9,
 		cellH:         18,
+		answersCap:    64 * 1024,
 	}
 	return e
+}
+
+// Resize rebuilds both screen buffers at a new size. Content is kept
+// from the top-left corner (truncated or padded with blanks), and the
+// cursor, saved cursor and scroll region are clamped to the new bounds.
+// Graphics state (images, in-flight kitty transmission) is dropped: a
+// size change invalidates pixel placements, and the foreground program
+// redraws anyway on the SIGWINCH that follows a real resize.
+func (e *Emulator) Resize(cols, rows int) {
+	if cols < 1 {
+		cols = 1
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	if cols == e.cols && rows == e.rows {
+		return
+	}
+
+	oldMain, oldAlt := e.main, e.alt
+	e.main = newGrid(rows, cols)
+	e.alt = newGrid(rows, cols)
+	copyGridTopLeft(e.main, oldMain)
+	copyGridTopLeft(e.alt, oldAlt)
+
+	e.cols, e.rows = cols, rows
+	e.row = min(e.row, rows-1)
+	e.col = min(e.col, cols-1)
+	e.savedRow = min(e.savedRow, rows-1)
+	e.savedCol = min(e.savedCol, cols-1)
+	e.scrollTop = min(e.scrollTop, rows-1)
+	e.scrollBottom = min(e.scrollBottom, rows-1)
+	if e.scrollTop >= e.scrollBottom {
+		e.scrollTop, e.scrollBottom = 0, rows-1
+	}
+	e.pendingWrap = false
+
+	// 尺寸突变使图形放置坐标失效:清空图片与分片暂存。
+	e.images = nil
+	e.kittyPending = kittyPending{}
+	e.answers = e.answers[:0]
+}
+
+// copyGridTopLeft copies the overlapping top-left region of src into dst.
+func copyGridTopLeft(dst, src *Grid) {
+	maxR := min(dst.Rows(), src.Rows())
+	maxC := min(dst.Cols(), src.Cols())
+	for r := 0; r < maxR; r++ {
+		copy(dst.cells[r][:maxC], src.cells[r][:maxC])
+	}
+}
+
+// DrainAnswers returns and clears the accumulated query responses
+// (DSR/DA/DECRQM), to be written back into the PTY by the caller.
+func (e *Emulator) DrainAnswers() []byte {
+	answers := e.answers
+	e.answers = nil
+	return answers
+}
+
+// answer appends a response byte sequence, bounded by answersCap.
+func (e *Emulator) answer(b []byte) {
+	if len(e.answers) >= e.answersCap {
+		return
+	}
+	room := e.answersCap - len(e.answers)
+	if len(b) > room {
+		b = b[:room]
+	}
+	e.answers = append(e.answers, b...)
 }
 
 // SetCellSize sets the pixel size of one grid cell (default 9×18). It is
@@ -483,11 +564,14 @@ func (e *Emulator) csiByte(b byte) {
 		e.csi.paramStr = append(e.csi.paramStr, b)
 	case b == '?':
 		e.csi.priv = true
+	case b >= 0x20 && b <= 0x3e:
+		// 中间字节(0x20-0x3E):DECRQM 的 '$'、DA2 的 '>' 等。
+		e.csi.inter = append(e.csi.inter, b)
 	case b >= 0x40 && b <= 0x7e: // final byte
 		e.csi.final = b
 		e.dispatchCSI()
 		e.state = stGround
-		// 0x20-0x2f intermediate 及其他:吞掉,等 final
+		// 其余:吞掉,等 final
 	}
 }
 
@@ -594,6 +678,7 @@ func (e *Emulator) reset() {
 	e.kittyPending = kittyPending{}
 	e.oscBuf, e.dcsBuf, e.apcBuf = nil, nil, nil
 	e.oscFull, e.dcsFull, e.apcFull = false, false, false
+	e.answers = e.answers[:0]
 }
 
 // parseParams splits a CSI parameter string on ';' and ':' (':'-separated
@@ -633,6 +718,11 @@ func oneOr(params []int, i, dflt int) int {
 
 func (e *Emulator) dispatchCSI() {
 	params := parseParams(e.csi.paramStr)
+	// 终端查询(DSR/DA/DECRQM)优先应答——程序在收到应答前会阻塞。
+	if e.csi.final == 'n' || e.csi.final == 'c' || (e.csi.priv && e.csi.final == 'p') {
+		e.answerQuery(params)
+		return
+	}
 	if e.csi.priv {
 		e.decPrivate(params, e.csi.final == 'h')
 		return
@@ -683,6 +773,69 @@ func (e *Emulator) dispatchCSI() {
 		e.scrollDownLines(oneOr(params, 0, 1))
 		// 其余(DEC private 之外、DSR 'n'、insert/delete char 等):忽略
 	}
+}
+
+// answerQuery responds to terminal queries by appending the reply to the
+// answers buffer (drained via DrainAnswers and written back into the PTY
+// by the caller). Queries must be answered or full-screen programs
+// (vim, htop, mc) hang on startup waiting for a reply.
+func (e *Emulator) answerQuery(params []int) {
+	switch e.csi.final {
+	case 'n': // DSR — device status report
+		switch {
+		case len(params) > 0 && params[0] == 6: // cursor position report
+			pos := strconv.Itoa(e.row+1) + ";" + strconv.Itoa(e.col+1)
+			if e.csi.priv {
+				e.answer([]byte("\x1b[?" + pos + "R"))
+			} else {
+				e.answer([]byte("\x1b[" + pos + "R"))
+			}
+		default: // status report (CSI 5 n): "ok"
+			e.answer([]byte("\x1b[0n"))
+		}
+	case 'c': // DA — device attributes
+		if hasByte(e.csi.inter, '>') {
+			// DA2 — xterm-style secondary attributes
+			e.answer([]byte("\x1b[>0;0;0c"))
+		} else {
+			// DA1 — VT100 with Advanced Video Option (most compatible)
+			e.answer([]byte("\x1b[?1;2c"))
+		}
+	case 'p': // DECRQM — CSI ? Ps $ p
+		if !hasByte(e.csi.inter, '$') || len(params) == 0 {
+			return
+		}
+		mode := params[0]
+		e.answer([]byte("\x1b[?" + strconv.Itoa(mode) + ";" + strconv.Itoa(e.decrqmState(mode)) + "$y"))
+	}
+}
+
+// decrqmState reports the mode state for a DECRQM reply:
+// 0 = not recognized, 1 = set, 2 = reset.
+func (e *Emulator) decrqmState(mode int) int {
+	switch mode {
+	case 25:
+		if e.cursorVisible {
+			return 1
+		}
+		return 2
+	case 47, 1047, 1049:
+		if e.useAlt {
+			return 1
+		}
+		return 2
+	default:
+		return 0
+	}
+}
+
+func hasByte(b []byte, target byte) bool {
+	for _, c := range b {
+		if c == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Emulator) decPrivate(params []int, set bool) {

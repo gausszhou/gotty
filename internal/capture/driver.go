@@ -120,6 +120,11 @@ func Run(opts Options) (*Result, error) {
 			n, rerr := term.Read(buf)
 			if n > 0 {
 				emu.Write(buf[:n])
+				// 把仿真器生成的终端查询应答写回 PTY,否则 vim/htop
+				// 等程序会阻塞在等待应答上。错误忽略(程序可能已退出)。
+				if ans := emu.DrainAnswers(); len(ans) > 0 {
+					_, _ = term.Write(ans)
+				}
 				lastOutNs.Store(time.Now().UnixNano())
 				anyOutput.Store(true)
 				if len(marker) > 0 && !markerHit.Load() {

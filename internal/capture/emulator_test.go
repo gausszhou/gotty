@@ -463,3 +463,121 @@ func TestEmptyAndNestedWritesDontPanic(t *testing.T) {
 		t.Errorf("split CSI not applied: %+v", g)
 	}
 }
+
+// resize ------------------------------------------------------------------
+
+func TestResizeGrowsKeepsTopLeft(t *testing.T) {
+	e := NewEmulator(5, 2)
+	write(t, e, "abc")
+	e.Resize(8, 3)
+	if e.Cols() != 8 || e.Rows() != 3 {
+		t.Fatalf("size = %dx%d, want 8x3", e.Cols(), e.Rows())
+	}
+	assertText(t, e, "abc") // 内容保留在左上角
+}
+
+func TestResizeShrinksTruncates(t *testing.T) {
+	e := NewEmulator(10, 4)
+	write(t, e, "hello world") // 第 10 列写满后 "d" 换行到第 2 行
+	e.Resize(6, 2)
+	assertText(t, e, "hello\nd") // 第 7 列起截断,第 3/4 行丢弃
+}
+
+func TestResizeClampsCursorAndScrollRegion(t *testing.T) {
+	e := NewEmulator(10, 5)
+	write(t, e, "12345")
+	write(t, e, "\x1b[2;4r\x1b[5;10H") // 滚动区 2-4,光标 (4,9)
+	e.Resize(3, 2)
+	if r, c := e.Cursor(); r != 1 || c != 2 {
+		t.Errorf("cursor = (%d,%d), want clamped (1,2)", r, c)
+	}
+	// 滚动区被重置为整屏,行末换行正常滚动
+	write(t, e, "A\n")
+	assertText(t, e, "  A") // A 写在 (1,2),换行后滚到第 0 行,前导空格保留
+}
+
+func TestResizeClearsAnswersAndImages(t *testing.T) {
+	e := NewEmulator(10, 3)
+	e.answer([]byte("\x1b[0n")) // 未排空的应答
+	e.Resize(12, 4)
+	if got := e.DrainAnswers(); len(got) != 0 {
+		t.Errorf("answers after resize = %q, want empty", got)
+	}
+	if len(e.Images()) != 0 {
+		t.Errorf("images after resize = %d, want 0", len(e.Images()))
+	}
+}
+
+// terminal query answers (DA/DSR/DECRQM) ----------------------------------
+
+func TestAnswerDA1(t *testing.T) {
+	e := NewEmulator(20, 5)
+	write(t, e, "\x1b[c")
+	if got := string(e.DrainAnswers()); got != "\x1b[?1;2c" {
+		t.Errorf("DA1 answer = %q, want %q", got, "\x1b[?1;2c")
+	}
+	// vim 风格:private 前缀 + 参数,应答相同
+	write(t, e, "\x1b[?1;2c")
+	if got := string(e.DrainAnswers()); got != "\x1b[?1;2c" {
+		t.Errorf("DA1 (private) answer = %q, want %q", got, "\x1b[?1;2c")
+	}
+}
+
+func TestAnswerDA2(t *testing.T) {
+	e := NewEmulator(20, 5)
+	write(t, e, "\x1b[>c")
+	if got := string(e.DrainAnswers()); got != "\x1b[>0;0;0c" {
+		t.Errorf("DA2 answer = %q, want %q", got, "\x1b[>0;0;0c")
+	}
+}
+
+func TestAnswerDSR(t *testing.T) {
+	e := NewEmulator(20, 5)
+	write(t, e, "ab\r\n") // 光标 (1,0)
+	write(t, e, "\x1b[6n")
+	if got := string(e.DrainAnswers()); got != "\x1b[2;1R" {
+		t.Errorf("DSR6 answer = %q, want %q", got, "\x1b[2;1R")
+	}
+	write(t, e, "\x1b[5n")
+	if got := string(e.DrainAnswers()); got != "\x1b[0n" {
+		t.Errorf("DSR5 answer = %q, want %q", got, "\x1b[0n")
+	}
+	write(t, e, "\x1b[?6n") // DECXCPR
+	if got := string(e.DrainAnswers()); got != "\x1b[?2;1R" {
+		t.Errorf("DECXCPR answer = %q, want %q", got, "\x1b[?2;1R")
+	}
+}
+
+func TestAnswerDECRQM(t *testing.T) {
+	e := NewEmulator(20, 5)
+	write(t, e, "\x1b[?25$p") // 光标可见 → 1
+	if got := string(e.DrainAnswers()); got != "\x1b[?25;1$y" {
+		t.Errorf("DECRQM ?25 = %q, want %q", got, "\x1b[?25;1$y")
+	}
+	write(t, e, "\x1b[?25l\x1b[?25$p") // 隐藏后 → 2
+	if got := string(e.DrainAnswers()); got != "\x1b[?25;2$y" {
+		t.Errorf("DECRQM ?25 after hide = %q, want %q", got, "\x1b[?25;2$y")
+	}
+	write(t, e, "\x1b[?1049h\x1b[?1049$p") // 备用屏 → 1
+	if got := string(e.DrainAnswers()); got != "\x1b[?1049;1$y" {
+		t.Errorf("DECRQM ?1049 = %q, want %q", got, "\x1b[?1049;1$y")
+	}
+	write(t, e, "\x1b[?2026$p") // 未跟踪模式 → 0
+	if got := string(e.DrainAnswers()); got != "\x1b[?2026;0$y" {
+		t.Errorf("DECRQM unknown = %q, want %q", got, "\x1b[?2026;0$y")
+	}
+}
+
+func TestAnswersBoundedAndDrainable(t *testing.T) {
+	e := NewEmulator(20, 5)
+	e.answersCap = 8
+	write(t, e, "\x1b[5n") // 4 字节应答
+	write(t, e, "\x1b[5n")
+	write(t, e, "\x1b[5n") // 第三条超出上限被丢弃
+	if got := string(e.DrainAnswers()); got != "\x1b[0n\x1b[0n" {
+		t.Errorf("capped answers = %q, want two DSR5 replies", got)
+	}
+	if got := e.DrainAnswers(); len(got) != 0 {
+		t.Errorf("second drain = %q, want empty", got)
+	}
+}
