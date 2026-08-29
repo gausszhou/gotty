@@ -3,7 +3,7 @@ package api
 // Options configures the HTTP/WebSocket server.
 type Options struct {
 	Address     string `json:"address" flagName:"address" flagSName:"a" flagDescribe:"IP address to listen" default:"0.0.0.0"`
-	Port        string `json:"port" flagName:"port" flagSName:"p" flagDescribe:"Port number to listen" default:"8080"`
+	Port        string `json:"port" flagName:"port" flagSName:"p" flagDescribe:"Port number to listen" default:"9049"`
 	PermitWrite bool   `json:"permit_write" flagName:"permit-write" flagSName:"w" flagDescribe:"Permit clients to write to the TTY (BE CAREFUL)" default:"true"`
 
 	TitleFormat     string `json:"title_format" flagName:"title-format" flagDescribe:"Title format of browser window" default:"GoTTY - {{ .command }}@{{ .hostname }}"`

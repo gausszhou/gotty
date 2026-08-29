@@ -31,10 +31,10 @@ make build     # 前端 + 内嵌静态资源 + ./build/gotty
 ## `gotty serve` — Web 终端
 
 ```sh
-gotty serve --port 8080 top
+gotty serve top
 ```
 
-打开 `http://localhost:8080`,点击「创建终端会话」卡片(或页签栏 **＋**
+打开 `http://localhost:9049`,点击「创建终端会话」卡片(或页签栏 **＋**
 按钮)即可创建运行该命令的会话并附着。不带命令启动时,默认会话命令为
 登录 shell(`$SHELL`)。
 
@@ -64,7 +64,7 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 
 ```
 -a, --address string        IP address to listen (default: "0.0.0.0") [$GOTTY_ADDRESS]
--p, --port string           Port number to listen (default: "8080") [$GOTTY_PORT]
+-p, --port string           Port number to listen (default: "9049") [$GOTTY_PORT]
 -w, --permit-write          Permit clients to write to the TTY (default: true — BE CAREFUL) [$GOTTY_PERMIT_WRITE]
     --title-format string   Title format of browser window (default: "GoTTY - {{ .command }}@{{ .hostname }}") [$GOTTY_TITLE_FORMAT]
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]

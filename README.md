@@ -32,10 +32,10 @@ make build     # frontend + embedded static + ./build/gotty
 ## `gotty serve` — web terminals
 
 ```sh
-gotty serve --port 8080 top
+gotty serve top
 ```
 
-Open `http://localhost:8080` and click the create card (or **＋** in the tab
+Open `http://localhost:9049` and click the create card (or **＋** in the tab
 bar) to create a session running the command and attach to it. Without a
 command, the default session command is the login shell (`$SHELL`).
 
@@ -92,7 +92,7 @@ shell syntax. Full design: [docs/capture-design.md](docs/capture-design.md).
 
 ```
 -a, --address string        IP address to listen (default: "0.0.0.0") [$GOTTY_ADDRESS]
--p, --port string           Port number to listen (default: "8080") [$GOTTY_PORT]
+-p, --port string           Port number to listen (default: "9049") [$GOTTY_PORT]
 -w, --permit-write          Permit clients to write to the TTY (default: true — BE CAREFUL) [$GOTTY_PERMIT_WRITE]
     --title-format string   Title format of browser window (default: "GoTTY - {{ .command }}@{{ .hostname }}") [$GOTTY_TITLE_FORMAT]
     --reconnect             Enable reconnection [$GOTTY_RECONNECT]

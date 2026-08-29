@@ -26,20 +26,20 @@ make all       # 构建前端 + 拷贝静态资源 + 编译 gotty 二进制
 gotty serve /bin/bash
 ```
 
-然后在浏览器中打开 `http://localhost:8080` 即可看到终端。
+然后在浏览器中打开 `http://localhost:9049` 即可看到终端。
 
 运行其他命令同样简单，例如 `htop`、`top`、`vim` 等：
 
 ```bash
-gotty serve --port 8080 htop
+gotty serve htop
 ```
 
 不跟命令启动则回退到登录 shell（`$SHELL`，未设置时用 `/bin/sh`）
 作为默认命令，页面打开即可用：
 
 ```bash
-gotty serve --port 8080            # 默认会话命令 = $SHELL
-curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'   # 显式命令优先
+gotty serve            # 默认会话命令 = $SHELL
+curl -X POST localhost:9049/api/sessions -d '{"command": "top"}'   # 显式命令优先
 ```
 
 页面打开后点击「创建终端会话」卡片(或页签栏 ＋ 按钮)即创建一个
@@ -50,7 +50,7 @@ curl -X POST localhost:8080/api/sessions -d '{"command": "top"}'   # 显式命�
 
 | 参数 | 说明 |
 | --- | --- |
-| `-p, --port` | 监听端口（默认 `8080`） |
+| `-p, --port` | 监听端口（默认 `9049`） |
 | `-a, --address` | 监听地址（默认 `0.0.0.0`） |
 | `-w, --permit-write` | 允许浏览器向终端写输入（**默认 true**，谨慎） |
 | `--reconnect` | 启用客户端断线重连（`--reconnect-time` 控制间隔, 默认 10） |
@@ -87,7 +87,7 @@ GoTTY - {{ .command }}@{{ .hostname }}
 
 ```json
 {
-    "port": "8080",
+    "port": "9049",
     "permit_write": false,
     "timeout": 0,
     "max_session": 0
@@ -112,7 +112,7 @@ POST   /api/sessions/:id/signal    发送信号（SIGINT/SIGTERM/SIGKILL/SIGHUP/
 id 记录（存活幂等、有记录则复活——用记录的 command/args 重建,`run_count+1`）。
 
 ```bash
-curl -X POST localhost:8080/api/sessions -d '{"command": "top", "width": 120, "height": 40}'
+curl -X POST localhost:9049/api/sessions -d '{"command": "top", "width": 120, "height": 40}'
 ```
 
 浏览器通过 `WS /ws?session_id=xxx`（子协议 `webtty`）附着到会话，二进制
