@@ -125,6 +125,9 @@ function selectLang(l: 'zh' | 'en') {
 .settings-title {
     font-size: 14px;
     font-weight: 600;
+    /* 固定行高:中文字体默认行高(normal)大于拉丁字体,
+       不固定会导致切换中英文时弹窗高度/位置跳动 */
+    line-height: 1.4;
     color: var(--fg-bright);
 }
 
@@ -153,6 +156,8 @@ function selectLang(l: 'zh' | 'en') {
 
 .settings-label {
     font-size: 12px;
+    /* 固定行高:避免中英文切换时行盒高度不同(同 .settings-title) */
+    line-height: 1.4;
     color: var(--fg-muted);
     margin-bottom: 8px;
 }
