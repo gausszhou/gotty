@@ -1,4 +1,13 @@
-package capture
+// Package browser implements the gotty capture browser engine: it boots
+// an ephemeral in-process gotty server (see NewEmbeddedServer) and drives
+// the real web terminal in a headless Chrome for pixel-perfect
+// screenshots of terminal output.
+//
+// It lives in its own package (not in capture) so the capture package
+// stays a pure VT-emulation/render library without the chromedp
+// dependency — the browser engine is an orchestration concern, not part
+// of the emulator.
+package browser
 
 import (
 	"bytes"
@@ -13,6 +22,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 
+	"github.com/gausszhou/gotty/internal/capture"
 	"github.com/gausszhou/gotty/internal/utils"
 )
 
@@ -51,7 +61,7 @@ type BrowserOptions struct {
 type BrowserResult struct {
 	PNG        []byte
 	SessionID  string
-	StopReason StopReason
+	StopReason capture.StopReason
 	TimedOut   bool
 	Duration   time.Duration
 }
@@ -153,7 +163,7 @@ loop:
 		select {
 		case <-timeoutTimer.C:
 			result.TimedOut = true
-			result.StopReason = StopTimeout
+			result.StopReason = capture.StopTimeout
 			break loop
 		case <-poll.C:
 			var activity int64
@@ -169,7 +179,7 @@ loop:
 			// 冷启动下命令常在附着前结束,先查退出会让 marker 场景错误
 			// 返回 exit(CI 上 TestBrowserEngineMarker 的确定性失败)。
 			if opts.Marker != "" && strings.Contains(tail, opts.Marker) {
-				result.StopReason = StopMarker
+				result.StopReason = capture.StopMarker
 				break loop
 			}
 			exited, err := sessionExited(ctx, base, sid)
@@ -177,12 +187,12 @@ loop:
 				return nil, err
 			}
 			if exited {
-				result.StopReason = StopExit
+				result.StopReason = capture.StopExit
 				break loop
 			}
 			if opts.WaitMs > 0 && activity > 0 &&
 				time.Since(time.UnixMilli(activity)) >= time.Duration(opts.WaitMs)*time.Millisecond {
-				result.StopReason = StopQuiet
+				result.StopReason = capture.StopQuiet
 				break loop
 			}
 		}

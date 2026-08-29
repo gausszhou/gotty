@@ -54,7 +54,7 @@ test: vet fmt
 
 # 浏览器引擎端到端测试(需本机有 Chrome/Chromium;CI 不跑,见 ci.yml)
 test-browser:
-	go test -tags browser_e2e ./internal/capture/
+	go test -tags browser_e2e ./internal/browser/
 
 vet:
 	go vet ./...

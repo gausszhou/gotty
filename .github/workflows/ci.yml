@@ -43,7 +43,7 @@ jobs:
       - name: Build
         run: make build
 
-      # Test: 单测内。/internal/capture 的 4 条浏览器引擎用例是
+      # Test: 单测内。/internal/browser 的 4 条浏览器引擎用例是
       # e2e(驱动真实 Chrome,对启动耗时敏感),已用 //go:build browser_e2e
       # 标签隔离,不含在 go test ./... 里;本机可用 make test-browser 跑。
       - name: Test

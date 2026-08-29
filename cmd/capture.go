@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gausszhou/gotty/internal/api"
+	"github.com/gausszhou/gotty/internal/browser"
 	"github.com/gausszhou/gotty/internal/capture"
 )
 
@@ -66,12 +66,12 @@ func buildCaptureCmd() *cobra.Command {
 				if sessionID == "" && len(args) == 0 {
 					return fmt.Errorf("no command given: `gotty capture --engine browser -- <command>` or pass --session-id")
 				}
-				base, shutdown, err := api.NewEmbeddedServer(nil)
+				base, shutdown, err := browser.NewEmbeddedServer(nil)
 				if err != nil {
 					return err
 				}
 				defer shutdown()
-				res, err := capture.RunBrowser(base, capture.BrowserOptions{
+				res, err := browser.RunBrowser(base, browser.BrowserOptions{
 					Command:     firstOr(args, 0, ""),
 					Args:        restOr(args),
 					SessionID:   sessionID,

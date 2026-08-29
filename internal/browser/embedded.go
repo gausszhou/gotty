@@ -1,23 +1,24 @@
-package api
+package browser
 
 import (
 	"fmt"
 	"net"
 	"net/http"
 
+	"github.com/gausszhou/gotty/internal/api"
 	"github.com/gausszhou/gotty/internal/session"
 )
 
 // NewEmbeddedServer boots an in-process gotty server bound to
 // 127.0.0.1:0 and returns its base URL plus a shutdown function. It is
-// used by the capture browser engine and its e2e tests, which need a
-// real gotty page without running the full Run loop — and without the
-// manager's idle sweep, because the caller manages session lifetime
-// explicitly (a browser-engine session may be attached long after the
-// command exited; the sweep would remove it and the page would 404).
-func NewEmbeddedServer(opts *Options) (base string, shutdown func(), err error) {
+// used by the browser engine and its e2e tests, which need a real gotty
+// page without running the full Run loop — and without the manager's
+// idle sweep, because the caller manages session lifetime explicitly (a
+// browser-engine session may be attached long after the command exited;
+// the sweep would remove it and the page would 404).
+func NewEmbeddedServer(opts *api.Options) (base string, shutdown func(), err error) {
 	if opts == nil {
-		opts = &Options{
+		opts = &api.Options{
 			Address:     "127.0.0.1",
 			Port:        "0",
 			PermitWrite: false,
@@ -25,7 +26,7 @@ func NewEmbeddedServer(opts *Options) (base string, shutdown func(), err error) 
 		}
 	}
 	mgr := session.NewManager()
-	srv, err := New(mgr, opts)
+	srv, err := api.New(mgr, opts)
 	if err != nil {
 		return "", nil, err
 	}

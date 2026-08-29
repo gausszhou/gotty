@@ -2,9 +2,9 @@
 
 // 浏览器引擎端到端测试:驱动真实 headless Chrome 渲染页面并截图。
 // 带 `browser_e2e` 标签,默认 `go test ./...`(CI 单测)不含本文件;
-// 本机需有 Chrome/Chromium 时用 `go test -tags browser_e2e ./internal/capture/`
+// 本机需有 Chrome/Chromium 时用 `go test -tags browser_e2e ./internal/browser/`
 // 或 `make test-browser` 运行。这类测试对 Chrome 启动耗时敏感,不宜进 CI。
-package capture_test
+package browser
 
 import (
 	"bytes"
@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gausszhou/gotty/internal/api"
 	"github.com/gausszhou/gotty/internal/capture"
 )
 
@@ -25,7 +24,7 @@ import (
 // engine and registers its shutdown.
 func newBrowserTestServer(t *testing.T) string {
 	t.Helper()
-	base, shutdown, err := api.NewEmbeddedServer(nil)
+	base, shutdown, err := NewEmbeddedServer(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +71,7 @@ func TestBrowserEngineText(t *testing.T) {
 	}
 	base := newBrowserTestServer(t)
 
-	res, err := capture.RunBrowser(base, capture.BrowserOptions{
+	res, err := RunBrowser(base, BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'browser engine works'"},
 		Cols:        60,
@@ -123,7 +122,7 @@ func TestBrowserEngineIIPImage(t *testing.T) {
 	seq := fmt.Sprintf("\033]1337;File=name=%s;size=%d;inline=1:%s\007",
 		name, len(raw), base64.StdEncoding.EncodeToString(raw))
 
-	res, err := capture.RunBrowser(base, capture.BrowserOptions{
+	res, err := RunBrowser(base, BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", fmt.Sprintf("printf '%s'", seq)},
 		Cols:        40,
@@ -153,7 +152,7 @@ func TestBrowserEngineMarker(t *testing.T) {
 	}
 	base := newBrowserTestServer(t)
 
-	res, err := capture.RunBrowser(base, capture.BrowserOptions{
+	res, err := RunBrowser(base, BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'quick marker'; sleep 2"},
 		Cols:        40,
@@ -182,7 +181,7 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 	// 若命令先退出,exit 判定会先于 quiet 触发,测试就变成环境敏感的。
 	// `sleep 10` 给出远超任何合理启动时间的窗口;quiet 在收到 'a' 后
 	// 静默 150ms 即触发(0.4s lull 内),远早于 10s 后的 'b'/退出。
-	res, err := capture.RunBrowser(base, capture.BrowserOptions{
+	res, err := RunBrowser(base, BrowserOptions{
 		Command:     "/bin/sh",
 		Args:        []string{"-c", "printf 'a'; sleep 0.4; printf 'b'; sleep 10"},
 		Cols:        40,

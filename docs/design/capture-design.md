@@ -268,7 +268,7 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 | 文件 | 改动 |
 |---|---|
 | `cmd/root.go` | 注册 `capture` 子命令 |
-| `internal/capture/*`（新） | emulator/graphics/render/driver + browser.go（M3） |
+| `internal/capture/*`（新） | emulator/graphics/render/driver；浏览器引擎在 `internal/browser`（M3） |
 | `internal/terminal/protocol.go` | （M4）0x37/0x38 帧 |
 | `internal/session/session.go` | （M4）Capture waiter |
 | `internal/api/session_handler.go` | （M4）capture REST 端点 |
