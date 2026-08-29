@@ -94,7 +94,13 @@ func RunBrowser(opts BrowserOptions) (*BrowserResult, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mgr.Start(ctx)
+	// 不启动管理器的清扫循环(DestroyExpired):它会在一秒内把命令进程
+	// 已退出的会话移出注册表。浏览器引擎恰恰要支持"进程退出后再附着"——
+	// 命令通常在 headless Chrome 冷启动(数秒)完成前就执行完了,页面随后
+	// 才 GET /api/sessions/:id 并附着 WS;环形缓冲 + bridge 重放让已退出
+	// 的会话依然可附着、可重放输出,清扫器却会让页面拿到 404。
+	// 临时 server 单会话、由下方的 defer deleteRemoteSession 显式清理,
+	// 无需周期性清扫;真实 serve 的清扫语义不受影响。
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
