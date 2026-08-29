@@ -58,7 +58,7 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 `timed_out`)。文本由内置 VT 仿真器渲染:SGR 颜色(16/256/24-bit)、
 光标/滚动/擦除、备用屏、CJK 宽字符。命令前加 `--`,shell 语法用
 `sh -c "..."`。图形协议图片(kitty/sixel/iTerm2)与像素级浏览器渲染
-计划在后续里程碑实现——见 [docs/capture-design.md](docs/capture-design.md)。
+计划在后续里程碑实现——见 [docs/design/capture-design.md](docs/design/capture-design.md)。
 
 # 选项
 
@@ -228,7 +228,7 @@ make test      # go vet + gofmt + go test
 
 代码分层:`internal/api`(HTTP/WebSocket)→ `internal/session`(生命周期)
 → `internal/terminal`(PTY + 二进制协议);capture 引擎在
-`internal/capture`。详见 [docs/feat-architecture.md](docs/feat-architecture.md)
+`internal/capture`。详见 [docs/design/feat-architecture.md](docs/design/feat-architecture.md)
 与[中文使用指南](apps/docs/guide/usage.md)。
 
 # License

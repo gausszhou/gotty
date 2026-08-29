@@ -86,7 +86,7 @@ Both engines snapshot the screen in a fixed-size terminal
 has been silent for `--wait-ms` (default 500 ms), when `--marker` appears
 in the stream, or on `--timeout` (default 30 s; the screen is returned
 with `timed_out` set). Use `--` before the command and `sh -c "..."` for
-shell syntax. Full design: [docs/capture-design.md](docs/capture-design.md).
+shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-design.md).
 
 # Options
 
@@ -265,7 +265,7 @@ make test      # go vet + gofmt + go test
 Sources are layered `internal/api` (HTTP/WebSocket) → `internal/session`
 (lifecycle) → `internal/terminal` (PTY + binary protocol); the capture
 engine lives in `internal/capture`. See
-[docs/feat-architecture.md](docs/feat-architecture.md) and the
+[docs/design/feat-architecture.md](docs/design/feat-architecture.md) and the
 [guide](apps/docs/guide/usage.md).
 
 # License

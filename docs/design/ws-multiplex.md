@@ -1,7 +1,7 @@
 # WebSocket 连接复用与二进制路由协议设计
 
 > 状态：设计中（待评审后实现）
-> 关联：`docs/feat-architecture.md` §5.2（WebSocket 附着）、§6（二进制协议）
+> 关联：`docs/design/feat-architecture.md` §5.2（WebSocket 附着）、§6（二进制协议）
 
 ## 1. 背景与动机
 

@@ -277,7 +277,7 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 | `apps/web/src/components/CaptureView.vue`（新） | 截图专用渲染页 |
 | `apps/web/src/utils/ws.ts` | + `onReady` hook（M3）；0x37/0x38（M4） |
 | `apps/web/src/components/Terminal.vue` | （M3）+ image addon；（M4）+ `WebglAddon(true)` 与 `capture()` |
-| `docs/ws-multiplex.md` / `README.md` | 帧表补 0x37/0x38（M4） |
+| `docs/design/ws-multiplex.md` / `README.md` | 帧表补 0x37/0x38（M4） |
 
 复用不动：`App.vue`、`TerminalPane.vue`、`utils/api.ts`（getSession/createSession）、
 `utils/manifest.ts`（CaptureView 显式不依赖）。
