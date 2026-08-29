@@ -22,7 +22,7 @@ features:
     details: 前端使用 Vite + Vue 3 + xterm.js v5（含 WebGL 渲染与多行复制粘贴）。
   - icon: 🛡️
     title: 可选的访问控制
-    details: 支持 Basic Auth、随机 URL 与 TLS（含双向 TLS），按需加固访问安全。
+    details: 支持 TLS 加密与 WebSocket 来源校验（`--ws-origin`），也可交由反向代理加固。
   - icon: 📦
     title: 单文件分发
     details: Go 编译产出单二进制文件，前端资源通过 go:embed 内置，零外部依赖。

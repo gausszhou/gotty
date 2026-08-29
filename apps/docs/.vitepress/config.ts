@@ -21,7 +21,6 @@ export default defineConfig({
                     items: [
                         { text: '介绍', link: '/guide/introduction' },
                         { text: '安装与使用', link: '/guide/usage' },
-                        { text: '前端架构', link: '/guide/frontend-architecture' },
                     ],
                 },
             ],

@@ -2,13 +2,13 @@
 
 ## 获取二进制
 
-下载适用于你平台的预编译二进制并赋予执行权限即可，无需安装任何运行时：
+从 [Releases 页面](https://github.com/gausszhou/gotty/releases) 下载适用于你平台的
+预编译二进制（如 `gotty-linux-amd64`），赋予执行权限即可，无需安装任何运行时：
 
 ```bash
 # Linux (x86_64) 示例
-wget https://github.com/gausszhou/gotty/releases/download/v2.0.0/gotty_linux_amd64.tar.gz
-tar -xzf gotty_linux_amd64.tar.gz
-chmod +x gotty
+chmod +x gotty-linux-amd64
+./gotty-linux-amd64 --version
 ```
 
 或者从源码构建（需要 Go 1.26+、Node.js 18+ 与 pnpm）：
@@ -118,24 +118,11 @@ id 记录（存活幂等、有记录则复活——用记录的 command/args 重
 curl -X POST localhost:9049/api/sessions -d '{"command": "top", "width": 120, "height": 40}'
 ```
 
-浏览器通过 `WS /ws?session_id=xxx`（子协议 `webtty`）附着到会话，二进制
-帧首字节为消息类型：`0x31` 输入/输出、`0x32` Ping/Pong、`0x33` 调整尺寸/
-设置标题、`0x34` 偏好、`0x35` 重连参数。
-
-## 开发模式
-
-前端为 Vite + Vue 3，文档站为 VitePress，二者由根目录的 pnpm workspace 统一管理：
-
-```bash
-pnpm install          # 安装全部 workspace 依赖
-pnpm dev:web          # 启动前端开发服务器（带 HMR）
-pnpm dev:docs         # 启动文档站开发服务器（带 HMR）
-pnpm build            # 构建前端 + 文档站
-```
+浏览器通过 `WS /ws?session_id=xxx`（子协议 `webtty`）附着到会话，收发二进制帧。
 
 ## Gotty capture — 端到端终端测试
 
-> 状态：M1 已实现（native 文本）；完整方案见 `docs/capture-design.md`。
+> 完整方案见 `docs/design/capture-design.md`。
 
 `gotty capture` 像 Playwright 驱动浏览器一样驱动一个终端：在固定尺寸的
 PTY 里执行指定命令，等渲染稳定后取走结果——纯文本、带样式的 JSON
@@ -159,7 +146,9 @@ gotty capture --format html --out screen.html -- sh -c 'printf "\033[31mRED\033[
 - 尺寸：`--cols/--rows`，默认 120×30；命令前加 `--`，shell 语法用 `sh -c "..."`；
 - 渲染引擎为内置 VT 仿真器：SGR（16/256/24-bit）、光标/滚动/擦除、
   备用屏、CJK 宽字符；
-- 图形协议图片（kitty/sixel/iTerm2）与像素级浏览器渲染在后续里程碑。
+- 图形协议图片：kitty 由 native 引擎提取（JSON `images[]`）；sixel/iTerm2
+  与像素级渲染（真实字体/CJK/emoji）用浏览器引擎 `--engine browser
+  --format png`，需本机有 Chrome/Chromium。
 
 ## 复制与粘贴
 
