@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,32 +72,9 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 	var ptmx *os.File
 	var err error
 	if term.rawMode {
-		// 原始模式:自管 PTY。pty.Open 同时给出 master 与 slave fd,
-		// 在 slave(程序一侧)上先设 raw 再启动进程——不能走
-		// pty.StartWithSize 的名字解析(master.Name() 只回 /dev/ptmx,
-		// 用它重开每次都会新建一对无用的 PTY)。
-		rawPTMX, rawTTY, oerr := pty.Open()
-		if oerr != nil {
-			return nil, fmt.Errorf("failed to open raw pty: %w", oerr)
-		}
-		if term.size.Cols > 0 && term.size.Rows > 0 {
-			_ = pty.Setsize(rawPTMX, &term.size)
-		}
-		if rerr := rawSlave(rawTTY); rerr != nil {
-			rawTTY.Close()
-			rawPTMX.Close()
-			return nil, fmt.Errorf("failed to set raw mode on terminal: %w", rerr)
-		}
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = rawTTY, rawTTY, rawTTY
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-		err = cmd.Start()
-		// 子进程已继承 slave fd;父进程侧关闭,避免干扰 termios 引用计数。
-		rawTTY.Close()
-		if err != nil {
-			rawPTMX.Close()
-		} else {
-			ptmx = rawPTMX
-		}
+		// 原始模式:自管 PTY(见 startRawPTY 的平台实现)。windows 无
+		// termios,由辅助函数回退到普通 pty.Start 路径。
+		ptmx, err = startRawPTY(cmd, term.size)
 	} else if term.size.Cols > 0 && term.size.Rows > 0 {
 		ptmx, err = pty.StartWithSize(cmd, &term.size)
 	} else {
@@ -315,15 +291,9 @@ func (t *Terminal) Close() error {
 // PTY's Setsid the command is a session leader, so its pgid equals its
 // pid and -pid addresses the whole group (covering sh -c children).
 // A dead group (ESRCH) falls back to signaling the process itself.
+// The Windows variant degrades to a plain process signal + kill.
 func (t *Terminal) signalGroup(sig syscall.Signal) error {
-	pid := t.cmd.Process.Pid
-	if err := syscall.Kill(-pid, sig); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
-			return t.cmd.Process.Signal(sig)
-		}
-		return err
-	}
-	return nil
+	return signalProcessGroup(t.cmd.Process, sig)
 }
 
 // WindowTitleVariables returns values that can be used to fill out

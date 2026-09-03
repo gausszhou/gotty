@@ -1,6 +1,15 @@
 # 优化 3:分发与自更新 —— install.sh + gotty self update
 
-> 状态:**待实施**(对标 `tu` 的安装体验调研结论)
+> 状态:**已实施(2026-08-29)**
+>
+> 实施摘要:Makefile 版本改 `git describe --tags` 派生,构建矩阵扩到 5 平台
+> (linux/darwin/windows × amd64/arm64),release 末尾生成 `sha256sums.txt`;
+> 新增 `scripts/install.sh`(探测→取发布→下载→校验→装到用户目录,零 sudo);
+> 新增 `gotty self update`(semver 比较、sha256 校验、同目录临时文件 + rename
+> 原子替换、`--dry-run`/`--check`/`--yes`/`--version`/`--repo`/`GOTTY_UPDATE_URL`
+> 覆盖)与 `gotty version --json`;新增 `internal/update` 包(纯函数可单测);
+> release.yml 上传 5 平台资产 + 校验和。不做包管理器发行(Homebrew/deb/rpm)
+> 与常驻升级检查——见 §5 范围外。
 >
 > 背景:`tu` 的分发做得极省心——`curl .../install.sh | sh` 一键装、
 > `tu self update` 自更新、crates 兜底 `cargo install`。我们目前只有
@@ -83,17 +92,44 @@
   路径。
 - docs 增加"发布清单"(打 tag → CI 出资产 → 校验和 → 更新 README 版本号)。
 
-## 3. 涉及文件
+## 3. 涉及文件(已实施)
 
 | 文件 | 改动 |
 |---|---|
-| `Makefile` | `VERSION` 改 git describe;`PLATFORMS` 扩展;release 生成 `sha256sums.txt`;windows `.exe` |
-| `scripts/install.sh` | 新增(探测/下载/校验/安装) |
-| `cmd/root.go` | 注册 `self update`、`version --json` |
-| `cmd/selfupdate.go` | 新增(查询/比较/下载/校验/原子替换) |
-| `internal/update/` | 新增包:GitHub API 客户端、semver 比较、原子替换(可单测) |
-| `.github/workflows/release.yml` | 新增(tag 触发发布) |
-| `README.md` / `README.zh-CN.md` | 安装/升级一节重写 |
+| `Makefile` | `VERSION` 改 `git describe --tags --always --dirty`;`PLATFORMS` 扩到 5 平台;windows 出 `.exe`;UPX 仅 linux(缺 upx 时跳过);release 末尾生成 `sha256sums.txt` |
+| `scripts/install.sh` | 新增(探测/取发布/下载/`sha256sum`/`shasum -a 256` 校验/安装到 `--prefix`,默认 `$HOME/.local/bin`,零 sudo;`--version`/`--prefix`/`--repo`/`GOTTY_UPDATE_URL`) |
+| `cmd/root.go` | 注册 `self update`、`version` |
+| `cmd/version.go` | 新增:`gotty version`(人类可读)`--json`(name/version/commit/go_version/os/arch) |
+| `cmd/selfupdate.go` | 新增:`--repo`/`--version`/`--yes`/`--dry-run`/`--check`;`GOTTY_UPDATE_URL` 覆盖索引地址 |
+| `internal/update/semver.go` | 新增:semver 解析与比较(v 前缀、pre-release、build 元数据忽略) |
+| `internal/update/github.go` | 新增:release 索引客户端(`releases/latest`、`releases/tags/{tag}`、自定义 URL)、资产查找、下载 |
+| `internal/update/checksum.go` | 新增:`sha256sums.txt` 解析与摘要校验(篡改中止) |
+| `internal/update/replace.go` | 新增:同目录临时文件 + fsync + rename 原子替换,失败保留旧二进制 |
+| `internal/update/update.go` | 新增:端到端流程编排(比较 → 提示变更 → 确认 → 下载校验 → 替换) |
+| `internal/update/update_test.go` | 新增:semver 边界、校验失败中止、原子替换失败保留旧二进制 |
+| `.github/workflows/release.yml` | 从 2 平台扩到 5 平台 + `sha256sums.txt` 上传;新增资产校验回归步骤 |
+| `README.md` / `README.zh-CN.md` | 安装/升级一节重写(一键装 + self update + make release) |
+
+实现说明(与 §2 的偏差与细化):
+
+- `GOTTY_UPDATE_URL` 语义:指向一个 **GitHub release 对象同形状的 JSON 索引**
+  (自建静态站点托管 `latest.json` 即可),替代 GitHub API——`--repo` 在该
+  模式下被忽略;资产 URL 从索引内 `assets[].browser_download_url` 解析。
+- `--check` 的"发现新版本"以退出码 1 表达(main 打印 `Error: ...` 到
+  stderr),供脚本判断;`--check`/`--dry-run` 均不落盘。
+- 本地版本非 semver(git describe 无 tag 的 hash、开发构建)时视为落后于
+  任何发布版,但会如实提示;`already up to date` 比较用 release tag 与本地
+  `cmd.Version`,build 元数据忽略。
+
+## 3.5 发布清单(每次发版)
+
+1. `git tag v2.1.0` && `git push origin v2.1.0`;
+2. CI(release.yml)在 tag 上构建 5 平台矩阵 + `sha256sums.txt`,上传资产,
+   `git log` 自动生成发布说明;
+3. 校验:安装脚本回归 `cd build && sha256sum -c --ignore-missing sha256sums.txt`
+   已内置于工作流;抽查 `gotty version --json` 的 version 字段等于 tag;
+4. 更新 README:示例命令中的版本号(install.sh / self update 默认取 latest,
+   一般无需改,仅在变更示例时)。
 
 ## 4. 测试与验收
 

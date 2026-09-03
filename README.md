@@ -20,12 +20,35 @@ Playwright-style.
 
 # Installation
 
-Download the latest binary from the [Releases](https://github.com/gausszhou/gotty/releases) page, or build from source (Go 1.26+, Node.js 18+, pnpm):
+One-line install (Linux/macOS, amd64/arm64, no sudo — installs to
+`~/.local/bin`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+# options: sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
+```
+
+Upgrade to the latest release (downloads, verifies `sha256sums.txt` and
+atomically swaps the binary in place — restart the service afterwards):
+
+```sh
+gotty self update          # or: --yes / --dry-run / --check
+```
+
+Build from source (Go 1.26+, Node.js 18+, pnpm) when you need a custom
+build or run pre-release code:
 
 ```sh
 make install   # frontend dependencies
 make build     # frontend + embedded static + ./build/gotty
+make release   # 5-platform matrix + sha256sums.txt into ./build/
 ```
+
+Release assets are named `gotty-{os}-{arch}[.exe]` for
+`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`, each
+with a `sha256sums.txt`; `gotty version --json` reports
+name/version/commit/go_version/os/arch for support triage. The version
+string is derived from the git tag via `git describe --tags`.
 
 # Usage
 

@@ -18,13 +18,34 @@ GoTTY 是一个命令行工具,把你的 CLI 工具跑在**浏览器托管的终
 
 # 安装
 
-从 [Releases](https://github.com/gausszhou/gotty/releases) 页面下载最新二进制,
-或从源码构建(需要 Go 1.26+、Node.js 18+ 与 pnpm):
+一键安装(Linux/macOS,amd64/arm64,不需要 sudo,默认装到 `~/.local/bin`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+# 可选参数:sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
+```
+
+升级到最新版(下载 → 校验 `sha256sums.txt` → 原子替换当前二进制;替换后
+需重启服务生效):
+
+```sh
+gotty self update          # 或 --yes / --dry-run / --check
+```
+
+需要自定义构建或跑未发布代码时再从源码构建(需要 Go 1.26+、Node.js 18+
+与 pnpm):
 
 ```sh
 make install   # 前端依赖
 make build     # 前端 + 内嵌静态资源 + ./build/gotty
+make release   # 5 平台矩阵 + sha256sums.txt 输出到 ./build/
 ```
+
+发布资产命名为 `gotty-{os}-{arch}[.exe]`,覆盖
+`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`,配套
+`sha256sums.txt`;`gotty version --json` 输出
+name/version/commit/go_version/os/arch 便于排查。版本号由 git tag 经
+`git describe --tags` 派生(单一来源)。
 
 # 使用
 

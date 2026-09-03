@@ -37,4 +37,6 @@ func init() {
 
 	rootCmd.AddCommand(buildServeCmd())
 	rootCmd.AddCommand(buildCaptureCmd())
+	rootCmd.AddCommand(buildVersionCmd())
+	rootCmd.AddCommand(buildSelfUpdateCmd())
 }
