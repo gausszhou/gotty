@@ -53,7 +53,7 @@
 
 - 用法:
   ```sh
-  curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
   # 或指定版本/前缀:
   #   sh install.sh --version v2.1.0 --prefix ~/.local
   ```

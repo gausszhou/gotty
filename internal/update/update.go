@@ -178,7 +178,7 @@ func Run(ctx context.Context, client *http.Client, opts Options, env Env) (Resul
 
 	if err := AtomicReplace(exe, bin); err != nil {
 		msg := "the update was verified but could not be installed — run the install script " +
-			"(curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh) " +
+			"(curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh) " +
 			"or write to " + exe + " yourself: " + err.Error()
 		return Result{}, errors.New(msg)
 	}

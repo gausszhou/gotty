@@ -2,7 +2,7 @@
 #
 # gotty 一键安装脚本
 #
-#   curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 #   # 指定版本 / 安装前缀 / 镜像仓库:
 #   #   sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
 #

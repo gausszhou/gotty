@@ -21,7 +21,7 @@ GoTTY 是一个命令行工具,把你的 CLI 工具跑在**浏览器托管的终
 一键安装(Linux/macOS,amd64/arm64,不需要 sudo,默认装到 `~/.local/bin`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 # 可选参数:sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
 ```
 

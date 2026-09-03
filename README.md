@@ -24,7 +24,7 @@ One-line install (Linux/macOS, amd64/arm64, no sudo — installs to
 `~/.local/bin`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 # options: sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
 ```
 
