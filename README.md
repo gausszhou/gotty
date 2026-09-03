@@ -99,6 +99,7 @@ shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-d
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
     --mirror                Keep a screen mirror per session for the agent API (screen/wait; default: true) [$GOTTY_MIRROR]
+    --answer-queries        Answer terminal queries when no browser client is attached (default: true) [$GOTTY_ANSWER_QUERIES]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]
@@ -264,8 +265,10 @@ for the output to settle, and type input — no browser needed. They are
 backed by a per-session screen mirror (a VT emulator tee'd from the PTY
 output, default on; disable with `--mirror=false`, which makes `screen`/
 `wait` answer `503`). The mirror also answers terminal queries (DA/DSR/
-DECRQM) when no browser client is attached, so full-screen programs like
-`vim` start without hanging:
+DECRQM, OSC colors) when no browser client is attached (`--answer-queries=
+false` disables it), so full-screen programs like `vim` start without
+hanging — semantically the same engine as `gotty capture` (an x/vt-based
+emulator):
 
 ```sh
 curl -X POST localhost:9049/api/sessions -d '{"command": "vim", "args": ["-u", "NONE"]}'

@@ -76,3 +76,17 @@ func WithInitialSize(cols, rows int) Option {
 		}
 	}
 }
+
+// WithRawMode configures the PTY slave as a raw terminal (no echo, no
+// canonical line buffering, no signal generation from the keyboard). This
+// is required for the capture engine: its query answers written back into
+// the PTY would otherwise be echoed to the master (caret-encoded, e.g.
+// "^[") and canonical mode would buffer them until a newline, hanging
+// programs that read a fixed number of reply bytes. Interactive sessions
+// keep the default cooked mode — shells and TUIs manage the termios state
+// themselves and the kernel echo is what shows typed input in the browser.
+func WithRawMode() Option {
+	return func(t *Terminal) {
+		t.rawMode = true
+	}
+}

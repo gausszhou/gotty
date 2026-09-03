@@ -37,8 +37,8 @@ tee 一份进这个仿真器,读屏能力就齐了**——不需要为 agent 重
 - 内存有界:网格固定 cols×rows;OSC/DCS/APC 缓冲已有 `gfxBufLimit`(16MB)上限;
   图片资产 `images[]` 数量上限由仿真器统一控制。镜像默认开启(成本≈一个固定
   网格),由 `serve` 选项 `--mirror=false` 可关。
-- 尺寸同步:resize 时镜像必须跟着变。当前 `Emulator` 没有 Resize 方法
-  (capture 固定尺寸),**前置依赖 0002 的 `Emulator.Resize(cols, rows)`**。
+- 尺寸同步:resize 时镜像必须跟着变。镜像仿真器的尺寸可变能力
+  (Resize)是 0002 的前置(x/vt 开箱自带,或手写补齐)。
 - 并发:仿真器不是线程安全的,镜像读写统一在 outputPump 的临界区内完成,
   快照端点通过 `Session.Screen()` 在锁内取网格副本(深拷贝 Grid,毫秒级)。
 
@@ -97,7 +97,7 @@ tee 一份进这个仿真器,读屏能力就齐了**——不需要为 agent 重
 | `internal/session/manager.go` | 按 id 暴露 Screen/Input/Wait 能力(经 Session) |
 | `internal/api/session_handler.go` | 新增 screen / wait / keys 三个 handler |
 | `internal/api/server.go` | 注册三条路由 |
-| `internal/capture/emulator.go` | `Resize(cols, rows)`(0002 一并做) |
+| `internal/capture/emulator.go` | 仿真层支持 `Resize`(0002:x/vt 自带或手写补齐) |
 | `internal/capture/driver.go` | 抽出可复用的 marker/quiet 匹配器 |
 | `apps/web/src/utils/api.ts` | 前端预留(暂不接 UI,仅 API 层) |
 | `docs/` | README REST API 一节补三条端点 |

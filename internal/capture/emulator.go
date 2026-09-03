@@ -1,13 +1,33 @@
-// Package capture implements the gotty capture engine: a minimal VT
-// terminal emulator that renders a PTY byte stream into a screen grid,
-// output renderers (text / json / html, PNG in M2) and the driver that
-// runs a command and snapshots the rendered result.
+// Package capture implements the gotty capture engine: it feeds a PTY byte
+// stream through a VT terminal emulator and renders the resulting screen
+// grid (text / json / html, PNG) plus graphics-protocol images (kitty /
+// sixel / iTerm2).
+//
+// The VT emulation itself is provided by charmbracelet/x/vt (the same
+// engine family that powers modern Charm terminals): a complete emulator
+// with built-in query answers (DA/DSR/DECRQM/OSC colors), screen buffers
+// with Resize and no scrollback exposure. This package wraps it with:
+//
+//   - the public snapshot API (Grid/Cell/Snapshot) used by the renderers;
+//   - a query-answer queue (DrainAnswers) the capture driver and the
+//     session mirror write back into the PTY;
+//   - the graphics-protocol extractor (graphics.go), which stays in-house:
+//     a byte-frame scanner runs in parallel with the emulator and decodes
+//     kitty APC / sixel DCS / iTerm2 OSC payloads into ImageAssets;
+//   - a few state bits x/vt does not expose (cursor visibility, RIS
+//     handler) tracked from the raw stream.
 package capture
 
 import (
+	"bytes"
+	"image/color"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	vt "github.com/charmbracelet/x/vt"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -53,36 +73,8 @@ type Cell struct {
 // inherited (xterm erase semantics), the foreground defaults to unset.
 func blankCell(bg Color) Cell { return Cell{Rune: ' ', Bg: bg} }
 
-// style is the SGR state applied to newly written cells.
-type style struct {
-	fg, bg Color
-
-	bold          bool
-	dim           bool
-	italic        bool
-	underline     bool
-	blink         bool
-	reverse       bool
-	invisible     bool
-	strikethrough bool
-}
-
-func (s *style) reset() { *s = style{fg: DefaultColor(), bg: DefaultColor()} }
-
-func (s style) applyTo(c *Cell) {
-	c.Fg = s.fg
-	c.Bg = s.bg
-	c.Bold = s.bold
-	c.Dim = s.dim
-	c.Italic = s.italic
-	c.Underline = s.underline
-	c.Blink = s.blink
-	c.Reverse = s.reverse
-	c.Invisible = s.invisible
-	c.Strikethrough = s.strikethrough
-}
-
-// Grid is a rectangular cell buffer (one screen).
+// Grid is a rectangular cell buffer (one snapshot of a screen). It is
+// materialized from the emulator, never mutated in place.
 type Grid struct {
 	rows, cols int
 	cells      [][]Cell
@@ -113,114 +105,393 @@ func (g *Grid) Cell(r, c int) Cell {
 	return g.cells[r][c]
 }
 
-func (g *Grid) set(r, c int, cell Cell) {
-	if r < 0 || r >= g.rows || c < 0 || c >= g.cols {
-		return
-	}
-	g.cells[r][c] = cell
-}
-
-// fill sets the inclusive rectangle (r1,c1)-(r2,c2) to blank cells with bg.
-func (g *Grid) fill(r1, c1, r2, c2 int, bg Color) {
-	for r := r1; r <= r2; r++ {
-		if r < 0 || r >= g.rows {
-			continue
-		}
-		for c := c1; c <= c2; c++ {
-			if c < 0 || c >= g.cols {
-				continue
-			}
-			g.cells[r][c] = blankCell(bg)
-		}
-	}
-}
-
-func (g *Grid) clear(bg Color) { g.fill(0, 0, g.rows-1, g.cols-1, bg) }
-
-// scrollUp shifts the region [top, bottom] up by one, filling the last line.
-// Cells are copied element-wise: assigning slice references would alias rows
-// and a later fill would clear the moved content as well.
-func (g *Grid) scrollUp(top, bottom int, bg Color) {
-	for r := top; r < bottom; r++ {
-		copy(g.cells[r], g.cells[r+1])
-	}
-	for c := 0; c < g.cols; c++ {
-		g.cells[bottom][c] = blankCell(bg)
-	}
-}
-
-// scrollDown shifts the region [top, bottom] down by one, filling the first line.
-func (g *Grid) scrollDown(top, bottom int, bg Color) {
-	for r := bottom; r > top; r-- {
-		copy(g.cells[r], g.cells[r-1])
-	}
-	for c := 0; c < g.cols; c++ {
-		g.cells[top][c] = blankCell(bg)
-	}
-}
-
-// parseState is the terminal parser's state machine node.
-type parseState uint8
-
-const (
-	stGround    parseState = iota
-	stEsc                  // ESC received, one byte dispatch
-	stEscSelect            // ESC ( or ESC ): consume one charset byte, ignore
-	stCSI                  // ESC [ ... collected until a final byte
-	stOSC                  // ESC ] ... collected until BEL or ESC \
-	stOSCEnd               // within OSC, ESC seen: expect '\'
-	stDCS                  // ESC P ... collected until ESC \
-	stDCSEnd               // within DCS, ESC seen: expect '\'
-	stAPC                  // ESC _ ... collected until ESC \ (kitty graphics)
-	stAPCEnd               // within APC, ESC seen: expect '\'
-)
-
-// gfxBufLimit caps the per-sequence buffers for OSC/DCS/APC payloads, so a
-// hostile or broken stream cannot balloon memory. Anything beyond the cap
-// is dropped as a whole sequence.
-const gfxBufLimit = 16 << 20
-
-// csiData accumulates one CSI sequence.
-type csiData struct {
-	priv     bool   // '?' private prefix seen
-	paramStr []byte // digits, ';' and ':' between priv/params and final
-	inter    []byte // intermediate bytes (0x20-0x3E, e.g. '$' DECRQM, '>' DA2)
-	final    byte
-}
-
 // widthCond 固定 EastAsianWidth=false:ambiguous 字符(如带重音的拉丁字母)
 // 始终按 1 格处理,不随服务端 locale 漂移,与浏览端 xterm.js 的默认语义
-// 一致(中文全角字符不受影响,仍算 2 格)。
+// 一致(中文全角字符不受影响,仍算 2 格)。x/vt 的 WcWidth 对这两类字符
+// 与 runewidth 判定一致(已由测试锁定),此处仍保留给 PNG 渲染的宽度判断。
 var widthCond = &runewidth.Condition{EastAsianWidth: false}
 
-// Emulator is a minimal VT terminal emulator: feed it a PTY byte stream
-// and snapshot the screen grid. It implements the subset needed by the
-// capture feature: printable UTF-8 text, cursor movement, erasure,
-// scrolling with a scroll region, SGR (16/256/24-bit colors), the
-// alternate screen and window-size queries are consumed and ignored.
+// kittyPlaceholderUTF8 is the UTF-8 encoding of the kitty graphics unicode
+// placeholder (U+10EEEE = F4 8E BB AE). The wrapper strips it from the
+// stream before it reaches the emulator: the placeholder is a rendering
+// hint for terminals with virtual-placeholder support, and would otherwise
+// show as a junk glyph.
+var kittyPlaceholderUTF8 = []byte("\U0010EEEE")
+
+// ---------------------------------------------------------------------------
+// 字节帧扫描器:parallel-to-emulator 的图形提取与模式跟踪
+
+// gfxEvt is the outcome of feeding one byte to gfxScanner.
+type gfxEvt uint8
+
+const (
+	gfxNone gfxEvt = iota
+	// gfxRune:一条完整的可打印 rune 被识别(scanner.rn/r w/runeBuf/runeLen 有效)。
+	// 这是宽字符行尾换行与 IRM 插入补偿的触发点。
+	gfxRune
+	gfxOSCPayload // 一条完整的 OSC 载荷(终止字节已消费)
+	gfxDCSPayload // 一条完整的 DCS 载荷
+	gfxAPCPayload // 一条完整的 APC 载荷
+	// gfxCSIReplaced:一条需要整段替换的 CSI 完成(scanner.replacement)。
+	// 用于 x/vt 未实现的 CSI s/u → 翻译为 DECSC/DECRC(ESC 7/8)。
+	gfxCSIReplaced
+)
+
+// gfxScanState is the scanner's framing state machine node.
+type gfxScanState uint8
+
+const (
+	gsScan   gfxScanState = iota
+	gsEsc                 // ESC received, one byte dispatch
+	gsCSI                 // ESC [ … collected until a final byte
+	gsUTF8                // 收集中一个多字节 UTF-8 字符(续字节)
+	gsOSC                 // ESC ] … collected until BEL or ESC \
+	gsOSCEnd              // within OSC, ESC seen: expect '\'
+	gsDCS                 // ESC P … collected until ESC \
+	gsDCSEnd              // within DCS, ESC seen: expect '\'
+	gsAPC                 // ESC _ … collected until ESC \ (kitty graphics)
+	gsAPCEnd              // within APC, ESC seen: expect '\'
+)
+
+// gfxBufLimit caps the per-sequence payload buffers, so a hostile or broken
+// stream cannot balloon memory. Anything beyond the cap is dropped as a
+// whole sequence (mirrors the previous emulator-side limit).
+const gfxBufLimit = 16 << 20
+
+// repMax caps how many repetitions a single CSI b may inject, so a hostile
+// "CSI 9999999 b" cannot balloon memory.
+const repMax = 4096
+
+// gfxScanner frames the byte stream into:
 //
-// Two screen buffers (main/alternate) are maintained; ?1049 switches
-// between them. No scrollback is kept — the grid is exactly cols×rows.
+//   - OSC/DCS/APC payloads (for the graphics extractor);
+//   - complete printable runes (to compensate x/vt gaps: a wide rune that
+//     does not fit at the right edge must wrap to the next line instead of
+//     being dropped, and IRM insert mode needs an ICH before each char);
+//   - CSI sequences (mode bits the wrapper tracks itself: ?25, IRM-4,
+//     and the s/u → DECSC/DECRC translation).
+//
+// It deliberately ignores the content of everything else: the emulator is
+// the authority on rendering.
+type gfxScanner struct {
+	state gfxScanState
+	buf   []byte
+	full  bool
+
+	// CSI collection state.
+	priv     bool
+	paramStr []byte
+	// csiLen counts the bytes of the CSI sequence since its ESC (inclusive
+	// of ESC and the final byte) — used to splice the s/u replacement.
+	csiLen int
+
+	// UTF-8 framing state (only in gsUTF8). The complete rune is emitted
+	// as one gfxRune event; runeBuf holds its raw encoding.
+	utf8Buf  [utf8.UTFMax]byte
+	utf8Got  int
+	utf8Need int
+	runeLen  int
+	rn       rune
+	w        int
+	runeBuf  [utf8.UTFMax]byte
+
+	// insertMode (IRM, CSI 4 h/l) is tracked here so Write can inject an
+	// ICH before printable runes while insert mode is active (x/vt does
+	// not implement IRM in its print path).
+	insertMode bool
+
+	// lastRune remembers the most recently seen printable rune (all
+	// widths) so CSI b (REP) can be translated — x/vt only records
+	// single-width characters, so repeating a wide character would
+	// silently no-op.
+	lastRuneBuf [utf8.UTFMax]byte
+	lastRuneLen int
+
+	// queryHits counts terminal queries seen since the last drain
+	// (DSR/DA/DECRQM finals + OSC color queries). DrainAnswers uses it to
+	// decide whether a short wait for the answer pump is worthwhile —
+	// chunks without queries must not pay the wait.
+	queryHits int
+	sawDollar bool // '$' intermediate seen in the current CSI
+
+	// payload holds the completed OSC/DCS/APC payload; valid only right
+	// after the corresponding advance() event.
+	payload []byte
+
+	// replacement holds the bytes to splice in place of a consumed CSI
+	// sequence; valid only right after a gfxCSIReplaced event.
+	replacement []byte
+
+	// onMode fires for CSI … h/l with the parsed parameters.
+	onMode func(priv bool, params []int, set bool)
+	// onRIS fires when a RIS (ESC c) is seen; the wrapper resets its
+	// own tracked state.
+	onRIS func()
+}
+
+// startPayload begins collecting a new OSC/DCS/APC payload.
+func (s *gfxScanner) startPayload() {
+	s.buf = s.buf[:0]
+	s.full = false
+}
+
+// appendPayload accumulates one payload byte, dropping the whole sequence
+// once it exceeds gfxBufLimit.
+func (s *gfxScanner) appendPayload(b byte) {
+	if s.full {
+		return
+	}
+	if len(s.buf) >= gfxBufLimit {
+		s.full = true
+		s.buf = nil
+		return
+	}
+	s.buf = append(s.buf, b)
+}
+
+// reset returns the scanner to its initial state (used on RIS and Resize).
+func (s *gfxScanner) reset() {
+	onMode, onRIS := s.onMode, s.onRIS
+	*s = gfxScanner{state: gsScan, onMode: onMode, onRIS: onRIS}
+}
+
+// bufferingRune reports whether the scanner is mid-way through a multi-byte
+// UTF-8 character (Write must not forward the partial bytes directly; the
+// whole rune is emitted on the gfxRune event).
+func (s *gfxScanner) bufferingRune() bool { return s.state == gsUTF8 }
+
+// countOSCQuery marks OSC 10/11/12 color queries ("Ps;?" / "Ps?") as
+// answerable, so DrainAnswers waits briefly for x/vt's reply.
+func (s *gfxScanner) countOSCQuery() {
+	p := s.payload
+	if len(p) < 2 || p[0] != '1' {
+		return
+	}
+	i := 0
+	for i < len(p) && p[i] >= '0' && p[i] <= '9' {
+		i++
+	}
+	if i < 1 || i > 2 || i == len(p) {
+		return // 仅 10|11|12
+	}
+	if p[i] == ';' {
+		i++
+	}
+	if i < len(p) && p[i] == '?' {
+		s.queryHits++
+	}
+}
+
+// scanByte handles a byte seen in ground state (printable text): ASCII is
+// emitted as an immediate rune; a UTF-8 lead byte starts rune collection.
+func (s *gfxScanner) scanByte(b byte) gfxEvt {
+	switch {
+	case b == 0x1b:
+		s.state = gsEsc
+		return gfxNone
+	case b < 0x80:
+		s.rn, s.w = rune(b), 1
+		s.runeBuf[0], s.runeLen = b, 1
+		s.lastRuneBuf, s.lastRuneLen = s.runeBuf, 1
+		return gfxRune
+	case b >= 0xc2 && b <= 0xf4:
+		s.utf8Buf[0] = b
+		s.utf8Got = 1
+		switch {
+		case b <= 0xdf:
+			s.utf8Need = 2
+		case b <= 0xef:
+			s.utf8Need = 3
+		default:
+			s.utf8Need = 4
+		}
+		s.runeLen = s.utf8Need
+		s.state = gsUTF8
+		return gfxNone
+	default:
+		// 孤立续字节/控制:忽略
+		return gfxNone
+	}
+}
+
+// advance feeds one byte and reports the event it completed. Bytes inside
+// a multi-byte UTF-8 character are consumed silently; the gfxRune event
+// fires when the last byte completes the rune.
+func (s *gfxScanner) advance(b byte) gfxEvt {
+	switch s.state {
+	case gsScan:
+		return s.scanByte(b)
+	case gsUTF8:
+		if b&0xc0 != 0x80 {
+			// 续字节不连续:丢弃已缓冲,把当前字节按普通字节重新处理
+			s.utf8Got, s.utf8Need = 0, 0
+			s.state = gsScan
+			return s.scanByte(b)
+		}
+		s.utf8Buf[s.utf8Got] = b
+		s.utf8Got++
+		if s.utf8Got == s.utf8Need {
+			r, _ := utf8.DecodeRune(s.utf8Buf[:s.utf8Got])
+			s.utf8Got, s.utf8Need = 0, 0
+			s.state = gsScan
+			s.rn = r
+			s.w = widthCond.RuneWidth(r)
+			copy(s.runeBuf[:], s.utf8Buf[:s.runeLen])
+			copy(s.lastRuneBuf[:], s.runeBuf[:s.runeLen])
+			s.lastRuneLen = s.runeLen
+			return gfxRune
+		}
+		return gfxNone
+	case gsEsc:
+		switch b {
+		case '[':
+			s.state = gsCSI
+			s.priv = false
+			s.paramStr = s.paramStr[:0]
+			s.csiLen = 2 // ESC + '['
+		case ']':
+			s.state = gsOSC
+			s.startPayload()
+		case 'P':
+			s.state = gsDCS
+			s.startPayload()
+		case '_':
+			s.state = gsAPC
+			s.startPayload()
+		case 'c': // RIS: emulator resets itself; the wrapper resets its own bits
+			if s.onRIS != nil {
+				s.onRIS()
+			}
+			s.state = gsScan
+		default:
+			s.state = gsScan
+		}
+	case gsCSI:
+		s.csiLen++
+		switch {
+		case b == '?':
+			s.priv = true
+		case b >= 0x30 && b <= 0x39 || b == 0x3b || b == 0x3a:
+			s.paramStr = append(s.paramStr, b)
+		case b >= 0x20 && b <= 0x3e:
+			// 中间字节:仅计数(csiLen);'$' 标记 DECRQM
+			if b == '$' {
+				s.sawDollar = true
+			}
+		case b >= 0x40 && b <= 0x7e: // final byte
+			params := parseParams(s.paramStr)
+			// 查询计数:DSR(n)/DA(c)/DECRQM($p)——用于 DrainAnswers 等待
+			if b == 'n' || b == 'c' || (b == 'p' && s.sawDollar) {
+				s.queryHits++
+			}
+			s.sawDollar = false
+			switch {
+			case b == 'h' || b == 'l':
+				if s.onMode != nil {
+					s.onMode(s.priv, params, b == 'h')
+				}
+				if !s.priv {
+					for _, p := range params {
+						if p == 4 { // IRM — 插入/替换模式
+							s.insertMode = b == 'h'
+						}
+					}
+				}
+			case b == 's' && !s.priv: // SCP: 保存光标 → DECSC
+				s.replacement = []byte{0x1b, '7'}
+				s.state = gsScan
+				return gfxCSIReplaced
+			case b == 'u' && !s.priv: // RCP: 恢复光标 → DECRC
+				s.replacement = []byte{0x1b, '8'}
+				s.state = gsScan
+				return gfxCSIReplaced
+			case b == 'b': // REP: 重复前一字符(x/vt 只记录单宽,统一翻译)
+				n := 1
+				if len(params) > 0 && params[0] > 0 {
+					n = params[0]
+				}
+				if n > repMax {
+					n = repMax
+				}
+				if s.lastRuneLen > 0 {
+					s.replacement = bytes.Repeat(s.lastRuneBuf[:s.lastRuneLen], n)
+				}
+				s.state = gsScan
+				return gfxCSIReplaced
+			}
+			s.state = gsScan
+		}
+	case gsOSC:
+		if b == 0x07 { // BEL 结束 OSC
+			s.state = gsScan
+			s.payload, s.buf = s.buf, nil
+			s.full = false
+			s.countOSCQuery()
+			return gfxOSCPayload
+		}
+		if b == 0x1b {
+			s.state = gsOSCEnd
+			return gfxNone
+		}
+		s.appendPayload(b)
+	case gsOSCEnd:
+		if b == '\\' {
+			s.state = gsScan
+			s.payload, s.buf = s.buf, nil
+			s.full = false
+			s.countOSCQuery()
+			return gfxOSCPayload
+		}
+		// 其他字节:吞掉,回到收集中(裸 ESC 内容本就非法)
+		s.state = gsOSC
+	case gsDCS:
+		if b == 0x1b {
+			s.state = gsDCSEnd
+			return gfxNone
+		}
+		s.appendPayload(b)
+	case gsDCSEnd:
+		if b == '\\' {
+			s.state = gsScan
+			s.payload, s.buf = s.buf, nil
+			s.full = false
+			return gfxDCSPayload
+		}
+		s.state = gsDCS
+	case gsAPC:
+		if b == 0x1b {
+			s.state = gsAPCEnd
+			return gfxNone
+		}
+		s.appendPayload(b)
+	case gsAPCEnd:
+		if b == '\\' {
+			s.state = gsScan
+			s.payload, s.buf = s.buf, nil
+			s.full = false
+			return gfxAPCPayload
+		}
+		s.state = gsAPC
+	}
+	return gfxNone
+}
+
+// ---------------------------------------------------------------------------
+// Emulator
+
+// Emulator is the capture engine facade: it owns a charmbracelet x/vt
+// emulator, an answer queue (terminal query responses the caller must write
+// back into the PTY) and the graphics extractor. It is not thread-safe;
+// callers serialize access (capture driver: single reader goroutine;
+// session mirror: one outputPump goroutine under its mirror lock).
 type Emulator struct {
-	cols, rows int
-	main, alt  *Grid
-	useAlt     bool
+	vt *vt.Emulator
 
-	style style
-	row   int
-	col   int
-	// savedRow/Col back ESC 7/8, CSI s/u and the ?1049 entry/exit pair.
-	savedRow, savedCol int
-	cursorVisible      bool
+	cellW, cellH int // pixel size of one grid cell (default 9×18)
 
-	// scrollTop/scrollBottom bound the scrolling region (inclusive).
-	scrollTop, scrollBottom int
-
-	pendingWrap bool // a full-width write happened at the last column
-
-	// cellW/cellH are the pixel size of one grid cell, used to convert
-	// graphics-protocol placements (pixels) into grid cells.
-	cellW, cellH int
+	// cursorVisible is tracked from CSI ? 25 h/l because x/vt does not
+	// expose mode state; it is reported in snapshots.
+	cursorVisible bool
 
 	// images holds every picture extracted from the output stream so far.
 	images []ImageAsset
@@ -228,25 +499,24 @@ type Emulator struct {
 	// kittyPending accumulates a kitty transmission across APC chunks.
 	kittyPending kittyPending
 
-	// per-sequence payload buffers for graphics extraction.
-	oscBuf, dcsBuf, apcBuf    []byte
-	oscFull, dcsFull, apcFull bool
+	// scanner frames the raw stream for graphics payloads and the mode
+	// bits the wrapper tracks itself.
+	scanner gfxScanner
 
-	// answers holds responses to terminal queries (DSR/DA/DECRQM) until
-	// the caller drains them with DrainAnswers and writes them back into
-	// the PTY. Queries must be answered or full-screen programs (vim,
-	// htop, mc) hang on startup waiting for a reply. answersCap bounds
-	// the buffer as a safety net against query spam; drains happen every
-	// output chunk, so the cap is rarely hit.
-	answers    []byte
+	// answers holds responses to terminal queries (DSR/DA/DECRQM/OSC
+	// colors) until the caller drains them with DrainAnswers and writes
+	// them back into the PTY. Queries must be answered or full-screen
+	// programs (vim, htop, mc) hang on startup waiting for a reply.
 	answersCap int
-
-	state    parseState
-	csi      csiData
-	utf8Buf  [utf8.UTFMax]byte
-	utf8Got  int
-	utf8Need int
+	answerCh   chan []byte
 }
+
+// answerWait bounds how long DrainAnswers waits for the answer pump to
+// deliver: the pump is woken by the same io.Pipe write that x/vt's query
+// handlers complete, so delivery is one scheduling hop away, typically
+// microseconds. The wait only happens when the queue is empty, so drains
+// of answer-free chunks cost at most one short delay.
+const answerWait = 10 * time.Millisecond
 
 // NewEmulator creates an emulator with a cols×rows screen.
 func NewEmulator(cols, rows int) *Emulator {
@@ -257,87 +527,123 @@ func NewEmulator(cols, rows int) *Emulator {
 		rows = 1
 	}
 	e := &Emulator{
-		cols:          cols,
-		rows:          rows,
-		main:          newGrid(rows, cols),
-		alt:           newGrid(rows, cols),
+		vt:            vt.NewEmulator(cols, rows),
 		cursorVisible: true,
-		scrollBottom:  rows - 1,
 		cellW:         9,
 		cellH:         18,
 		answersCap:    64 * 1024,
+		answerCh:      make(chan []byte, 64),
 	}
+	e.scanner.onMode = e.trackMode
+	e.scanner.onRIS = e.onRIS
+	// x/vt 把查询应答写入内部 pw 管道;由专用 goroutine 泵进应答队列,
+	// DrainAnswers 在任何时刻都能取到已产生的应答。
+	go e.answerPump()
 	return e
 }
 
-// Resize rebuilds both screen buffers at a new size. Content is kept
-// from the top-left corner (truncated or padded with blanks), and the
-// cursor, saved cursor and scroll region are clamped to the new bounds.
-// Graphics state (images, in-flight kitty transmission) is dropped: a
-// size change invalidates pixel placements, and the foreground program
-// redraws anyway on the SIGWINCH that follows a real resize.
-func (e *Emulator) Resize(cols, rows int) {
-	if cols < 1 {
-		cols = 1
+// answerPump continuously reads the emulator's answer pipe into the queue.
+func (e *Emulator) answerPump() {
+	buf := make([]byte, 4096)
+	for {
+		n, err := e.vt.Read(buf)
+		if n > 0 {
+			e.answer(buf[:n])
+		}
+		if err != nil {
+			return
+		}
 	}
-	if rows < 1 {
-		rows = 1
-	}
-	if cols == e.cols && rows == e.rows {
-		return
-	}
-
-	oldMain, oldAlt := e.main, e.alt
-	e.main = newGrid(rows, cols)
-	e.alt = newGrid(rows, cols)
-	copyGridTopLeft(e.main, oldMain)
-	copyGridTopLeft(e.alt, oldAlt)
-
-	e.cols, e.rows = cols, rows
-	e.row = min(e.row, rows-1)
-	e.col = min(e.col, cols-1)
-	e.savedRow = min(e.savedRow, rows-1)
-	e.savedCol = min(e.savedCol, cols-1)
-	e.scrollTop = min(e.scrollTop, rows-1)
-	e.scrollBottom = min(e.scrollBottom, rows-1)
-	if e.scrollTop >= e.scrollBottom {
-		e.scrollTop, e.scrollBottom = 0, rows-1
-	}
-	e.pendingWrap = false
-
-	// 尺寸突变使图形放置坐标失效:清空图片与分片暂存。
-	e.images = nil
-	e.kittyPending = kittyPending{}
-	e.answers = e.answers[:0]
-}
-
-// copyGridTopLeft copies the overlapping top-left region of src into dst.
-func copyGridTopLeft(dst, src *Grid) {
-	maxR := min(dst.Rows(), src.Rows())
-	maxC := min(dst.Cols(), src.Cols())
-	for r := 0; r < maxR; r++ {
-		copy(dst.cells[r][:maxC], src.cells[r][:maxC])
-	}
-}
-
-// DrainAnswers returns and clears the accumulated query responses
-// (DSR/DA/DECRQM), to be written back into the PTY by the caller.
-func (e *Emulator) DrainAnswers() []byte {
-	answers := e.answers
-	e.answers = nil
-	return answers
 }
 
 // answer appends a response byte sequence, bounded by answersCap.
 func (e *Emulator) answer(b []byte) {
-	if len(e.answers) >= e.answersCap {
+	if len(b) > e.answersCap {
+		b = b[:e.answersCap]
+	}
+	select {
+	case e.answerCh <- append([]byte(nil), b...):
+	default:
+		// 队列满(查询风暴):丢弃最旧?——直接丢弃本条,泵每块都排空。
+	}
+}
+
+// DrainAnswers returns and clears the accumulated query responses
+// (DA/DSR/DECRQM/OSC colors), to be written back into the PTY by the caller.
+// When the queue is empty it waits up to answerWait for the answer pump to
+// deliver a reply that x/vt just generated (the pump goroutine may not have
+// been scheduled yet); chunks with no queries pay at most one short delay.
+func (e *Emulator) DrainAnswers() []byte {
+	var out []byte
+	// 先非阻塞取走所有已送达的应答。
+	for {
+		select {
+		case b := <-e.answerCh:
+			out = append(out, b...)
+			if len(out) >= e.answersCap {
+				return out[:e.answersCap]
+			}
+			continue
+		default:
+		}
+		break
+	}
+	// 队列为空且刚才有过查询:给应答泵一个调度机会(泵与 vt 的应答
+	// 写入隔着一次 goroutine 调度)。无查询的块不加等待,保持吞吐。
+	if e.scanner.queryHits > 0 {
+		e.scanner.queryHits = 0
+		timer := time.NewTimer(answerWait)
+		for {
+			select {
+			case b := <-e.answerCh:
+				out = append(out, b...)
+				if len(out) >= e.answersCap {
+					timer.Stop()
+					return out[:e.answersCap]
+				}
+				continue
+			case <-timer.C:
+				timer.Stop()
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// trackMode handles CSI … h/l from the byte stream for the mode bits the
+// wrapper tracks; the emulator applies all modes itself.
+func (e *Emulator) trackMode(priv bool, params []int, set bool) {
+	if !priv {
 		return
 	}
-	room := e.answersCap - len(e.answers)
-	if len(b) > room {
-		b = b[:room]
+	for _, p := range params {
+		if p == 25 {
+			e.cursorVisible = set
+		}
 	}
-	e.answers = append(e.answers, b...)
+}
+
+// onRIS resets the wrapper-tracked state on RIS (the emulator resets its
+// own screen and modes internally).
+func (e *Emulator) onRIS() {
+	e.cursorVisible = true
+	e.images = nil
+	e.kittyPending = kittyPending{}
+	e.scanner.reset()
+	e.clearAnswers()
+}
+
+// clearAnswers drops any queued query responses (used on RIS/Resize, where
+// pending replies would be stale).
+func (e *Emulator) clearAnswers() {
+	for {
+		select {
+		case <-e.answerCh:
+		default:
+			return
+		}
+	}
 }
 
 // SetCellSize sets the pixel size of one grid cell (default 9×18). It is
@@ -353,22 +659,40 @@ func (e *Emulator) SetCellSize(w, h int) {
 	e.cellW, e.cellH = w, h
 }
 
-// Cols returns the terminal width.
-func (e *Emulator) Cols() int { return e.cols }
-
-// Rows returns the terminal height.
-func (e *Emulator) Rows() int { return e.rows }
-
-// Screen returns the active (main or alternate) grid.
-func (e *Emulator) Screen() *Grid {
-	if e.useAlt {
-		return e.alt
+// Resize rebuilds the screen buffers at a new size. x/vt keeps content from
+// the top-left corner (truncated or padded) and clamps cursor, saved cursor
+// and scroll region. Graphics state is dropped: a size change invalidates
+// pixel placements, and the foreground program redraws anyway on the
+// SIGWINCH that follows a real resize.
+func (e *Emulator) Resize(cols, rows int) {
+	if cols < 1 {
+		cols = 1
 	}
-	return e.main
+	if rows < 1 {
+		rows = 1
+	}
+	if cols == e.vt.Width() && rows == e.vt.Height() {
+		return
+	}
+	e.vt.Resize(cols, rows)
+	e.images = nil
+	e.kittyPending = kittyPending{}
+	// 尺寸突变使图形放置坐标失效:清暂存与未排空的应答。
+	e.scanner.reset()
+	e.clearAnswers()
 }
 
-// Cursor returns the current cursor position.
-func (e *Emulator) Cursor() (row, col int) { return e.row, e.col }
+// Cols returns the terminal width.
+func (e *Emulator) Cols() int { return e.vt.Width() }
+
+// Rows returns the terminal height.
+func (e *Emulator) Rows() int { return e.vt.Height() }
+
+// Cursor returns the current cursor position (row, col).
+func (e *Emulator) Cursor() (row, col int) {
+	p := e.vt.CursorPosition()
+	return p.Y, p.X
+}
 
 // CursorVisible reports whether the cursor is shown (DECSET/DECRST 25).
 func (e *Emulator) CursorVisible() bool { return e.cursorVisible }
@@ -376,314 +700,178 @@ func (e *Emulator) CursorVisible() bool { return e.cursorVisible }
 // Images returns every graphics-protocol picture extracted so far.
 func (e *Emulator) Images() []ImageAsset { return e.images }
 
+// cursorXY returns the current cursor as (col, row) — the x/y order used
+// by x/vt and by graphics placements.
+func (e *Emulator) cursorXY() (x, y int) {
+	p := e.vt.CursorPosition()
+	return p.X, p.Y
+}
+
+// moveCursorTo moves the emulator cursor to (row, col), 0-based. It is used
+// after a graphics placement to advance the cursor by the picture size
+// (x/vt has no direct cursor setter, so the wrapper emits CUP).
+func (e *Emulator) moveCursorTo(row, col int) {
+	row = min(max(0, row), e.vt.Height()-1)
+	col = min(max(0, col), e.vt.Width()-1)
+	e.vt.WriteString("\x1b[" + strconv.Itoa(row+1) + ";" + strconv.Itoa(col+1) + "H")
+}
+
 // Write feeds raw terminal output into the emulator; it implements io.Writer.
+//
+// The stream is processed in runs: bytes are batched and handed to the
+// emulator as contiguous blocks (so grapheme clusters composed across
+// several code points stay intact), but flushed at every point where the
+// wrapper must interject:
+//
+//   - graphics-sequence boundaries, so image placements read the cursor at
+//     the exact moment the sequence terminated;
+//   - complete printable runes, for two x/vt gap compensations:
+//     1. a wide rune that does not fit at the right edge gets a CR LF
+//     before it (x/vt drops it instead of wrapping, unlike xterm);
+//     2. while IRM (insert mode) is set, an ICH inserts the rune's width
+//     of blank cells first (x/vt does not implement IRM).
+//
+// CSI s/u (ANSI Save/Restore Cursor) is translated to DECSC/DECRC
+// (ESC 7/8), which x/vt does implement.
 func (e *Emulator) Write(p []byte) (int, error) {
-	for _, b := range p {
-		e.writeByte(b)
+	if len(p) == 0 {
+		return 0, nil
 	}
+	// kitty 占位字符不渲染进网格:剔除后 x/vt 不会看到它。
+	p = bytes.ReplaceAll(p, kittyPlaceholderUTF8, nil)
+
+	run := make([]byte, 0, len(p))
+	flush := func() {
+		if len(run) > 0 {
+			_, _ = e.vt.Write(run)
+			run = run[:0]
+		}
+	}
+	for _, b := range p {
+		ev := e.scanner.advance(b)
+		switch ev {
+		case gfxRune:
+			sc := &e.scanner
+			if sc.w > 1 {
+				flush()
+				x, _ := e.cursorXY()
+				if x+sc.w > e.vt.Width() {
+					// 行尾放不下的宽字符:先换行(等价于旧引擎的 wrap)。
+					e.vt.WriteString("\r\n")
+				}
+			}
+			if sc.insertMode && sc.w > 0 {
+				flush()
+				e.vt.WriteString("\x1b[" + strconv.Itoa(sc.w) + "@")
+			}
+			run = append(run, sc.runeBuf[:sc.runeLen]...)
+		case gfxCSIReplaced:
+			// CSI s/u → ESC 7/8(DECSC/DECRC)。
+			cut := e.scanner.csiLen - 1
+			if cut > len(run) {
+				cut = len(run)
+			}
+			run = run[:len(run)-cut]
+			run = append(run, e.scanner.replacement...)
+		case gfxOSCPayload:
+			run = append(run, b)
+			flush()
+			e.handleOSC(e.scanner.payload)
+			e.scanner.payload = nil
+		case gfxDCSPayload:
+			run = append(run, b)
+			flush()
+			e.handleDCS(e.scanner.payload)
+			e.scanner.payload = nil
+		case gfxAPCPayload:
+			run = append(run, b)
+			flush()
+			e.handleAPC(e.scanner.payload)
+			e.scanner.payload = nil
+		default:
+			// 多字节 UTF-8 的中间字节暂存在扫描器里,完整 rune 随
+			// gfxRune 事件整体送出;其余字节直接进 run。
+			if !e.scanner.bufferingRune() {
+				run = append(run, b)
+			}
+		}
+	}
+	flush()
 	return len(p), nil
 }
 
-func (e *Emulator) grid() *Grid { return e.Screen() }
-
-func (e *Emulator) writeByte(b byte) {
-	switch e.state {
-	case stGround:
-		e.ground(b)
-	case stEsc:
-		e.esc(b)
-	case stEscSelect:
-		// 字符集选择(ESC ( B 等):消费即忽略
-		e.state = stGround
-	case stCSI:
-		e.csiByte(b)
-	case stOSC:
-		if b == 0x07 { // BEL 结束 OSC
-			e.handleOSC(e.oscBuf)
-			e.state = stGround
-		} else if b == 0x1b {
-			e.state = stOSCEnd
-		} else {
-			e.oscAppend(b)
-		}
-	case stOSCEnd:
-		// ESC \ 结束 OSC(BEL 之外的标准终结符);其他字节被吞掉,
-		// 当作 OSC 内容继续收集(不 append,裸 ESC 内容本就非法)
-		if b == '\\' {
-			e.handleOSC(e.oscBuf)
-			e.state = stGround
-		} else {
-			e.state = stOSC
-		}
-	case stDCS:
-		if b == 0x1b {
-			e.state = stDCSEnd
-		} else {
-			e.dcsAppend(b)
-		}
-	case stDCSEnd:
-		if b == '\\' {
-			e.handleDCS(e.dcsBuf)
-			e.state = stGround
-		} else {
-			e.state = stDCS
-		}
-	case stAPC:
-		if b == 0x1b {
-			e.state = stAPCEnd
-		} else {
-			e.apcAppend(b)
-		}
-	case stAPCEnd:
-		if b == '\\' {
-			e.handleAPC(e.apcBuf)
-			e.state = stGround
-		} else {
-			e.state = stAPC
+// Screen materializes the active (main or alternate) screen into a Grid.
+// Wide characters occupy two columns: the leading cell carries the rune,
+// the continuation cell is a zero cell (rendered as nothing).
+func (e *Emulator) Screen() *Grid {
+	cols, rows := e.vt.Width(), e.vt.Height()
+	g := newGrid(rows, cols)
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			vc := e.vt.CellAt(x, y)
+			if vc == nil {
+				continue
+			}
+			if w := vc.Width; w > 1 && x+1 < cols {
+				g.cells[y][x] = vtCellToGrid(vc)
+				g.cells[y][x+1] = Cell{} // 宽字符续列:占位格(Rune==0)
+				x++
+				continue
+			}
+			g.cells[y][x] = vtCellToGrid(vc)
 		}
 	}
+	return g
 }
 
-// oscAppend/dcsAppend/apcAppend accumulate sequence payloads, dropping the
-// whole sequence once it exceeds gfxBufLimit.
-func (e *Emulator) oscAppend(b byte) {
-	if e.oscFull {
-		return
+// vtCellToGrid converts one x/vt cell into the capture cell model.
+func vtCellToGrid(vc *uv.Cell) Cell {
+	if vc.Width == 0 {
+		// 宽字符续列/空单元:占位格。
+		return Cell{}
 	}
-	if len(e.oscBuf) >= gfxBufLimit {
-		e.oscFull = true
-		e.oscBuf = nil
-		return
+	var cell Cell
+	if rs := []rune(vc.Content); len(rs) > 0 {
+		cell.Rune = rs[0]
 	}
-	e.oscBuf = append(e.oscBuf, b)
+	cell.Fg = colorFromVT(vc.Style.Fg)
+	cell.Bg = colorFromVT(vc.Style.Bg)
+	att := vc.Style.Attrs
+	cell.Bold = att&uv.AttrBold != 0
+	cell.Dim = att&uv.AttrFaint != 0
+	cell.Italic = att&uv.AttrItalic != 0
+	cell.Underline = vc.Style.Underline != uv.UnderlineNone
+	cell.Blink = att&uv.AttrBlink != 0 || att&uv.AttrRapidBlink != 0
+	cell.Reverse = att&uv.AttrReverse != 0
+	cell.Invisible = att&uv.AttrConceal != 0
+	cell.Strikethrough = att&uv.AttrStrikethrough != 0
+	return cell
 }
 
-func (e *Emulator) dcsAppend(b byte) {
-	if e.dcsFull {
-		return
-	}
-	if len(e.dcsBuf) >= gfxBufLimit {
-		e.dcsFull = true
-		e.dcsBuf = nil
-		return
-	}
-	e.dcsBuf = append(e.dcsBuf, b)
-}
-
-func (e *Emulator) apcAppend(b byte) {
-	if e.apcFull {
-		return
-	}
-	if len(e.apcBuf) >= gfxBufLimit {
-		e.apcFull = true
-		e.apcBuf = nil
-		return
-	}
-	e.apcBuf = append(e.apcBuf, b)
-}
-
-func (e *Emulator) abortUTF8() {
-	e.utf8Got, e.utf8Need = 0, 0
-}
-
-func (e *Emulator) ground(b byte) {
-	switch {
-	case b == 0x1b:
-		e.abortUTF8()
-		e.state = stEsc
-	case b == 0x08: // BS
-		if e.col > 0 {
-			e.col--
-		}
-	case b == 0x09: // TAB
-		e.col = min(e.cols-1, (e.col/8+1)*8)
-	case b == 0x0a || b == 0x0b || b == 0x0c: // LF/VT/FF
-		e.lineFeed()
-	case b == 0x0d: // CR
-		e.col = 0
-	case b == 0x07 || b == 0x0e || b == 0x0f: // BEL/SO/SI: ignore
-	case b < 0x20 || b == 0x7f: // 其他控制字符:忽略
-	case b >= 0x80:
-		e.utf8Byte(b)
+// colorFromVT converts an x/vt cell color into the capture color model.
+func colorFromVT(c color.Color) Color {
+	switch v := c.(type) {
+	case nil:
+		return DefaultColor()
+	case ansi.BasicColor:
+		return Color{Mode: ColorIndex, Index: uint8(v)}
+	case ansi.IndexedColor:
+		return Color{Mode: ColorIndex, Index: uint8(v)}
+	case color.RGBA:
+		return Color{Mode: ColorRGB, RGB: uint32(v.R)<<16 | uint32(v.G)<<8 | uint32(v.B)}
 	default:
-		e.putRune(rune(b))
+		// 理论兜底(命名色等):按 RGBA 近似为 24-bit。
+		r, g, b, _ := v.RGBA()
+		return Color{Mode: ColorRGB, RGB: uint32(r>>8)<<16 | uint32(g>>8)<<8 | uint32(b>>8)}
 	}
 }
 
-func (e *Emulator) esc(b byte) {
-	switch {
-	case b == '[':
-		e.state = stCSI
-		e.csi = csiData{}
-	case b == ']':
-		e.state = stOSC
-		e.oscBuf = e.oscBuf[:0]
-		e.oscFull = false
-	case b == 'P':
-		e.state = stDCS
-		e.dcsBuf = e.dcsBuf[:0]
-		e.dcsFull = false
-	case b == '_':
-		e.state = stAPC
-		e.apcBuf = e.apcBuf[:0]
-		e.apcFull = false
-	case b == '(' || b == ')':
-		e.state = stEscSelect
-	case b == '7': // DECSC: 保存光标
-		e.savedRow, e.savedCol = e.row, e.col
-		e.state = stGround
-	case b == '8': // DECRC: 恢复光标
-		e.row, e.col = e.savedRow, e.savedCol
-		e.pendingWrap = false
-		e.state = stGround
-	case b == 'D': // IND
-		e.lineFeed()
-		e.state = stGround
-	case b == 'M': // RI
-		e.reverseIndex()
-		e.state = stGround
-	case b == 'E': // NEL
-		e.lineFeed()
-		e.col = 0
-		e.state = stGround
-	case b == 'c': // RIS
-		e.reset()
-		e.state = stGround
-	default: // 未知 ESC 序列:按两字节消费忽略
-		e.state = stGround
-	}
-}
-
-func (e *Emulator) csiByte(b byte) {
-	switch {
-	case b == 0x1b:
-		// ESC 取消进行中的 CSI 序列,自身作为新转义的开头
-		e.csi = csiData{}
-		e.state = stEsc
-	case b >= 0x30 && b <= 0x39 || b == 0x3b || b == 0x3a:
-		e.csi.paramStr = append(e.csi.paramStr, b)
-	case b == '?':
-		e.csi.priv = true
-	case b >= 0x20 && b <= 0x3e:
-		// 中间字节(0x20-0x3E):DECRQM 的 '$'、DA2 的 '>' 等。
-		e.csi.inter = append(e.csi.inter, b)
-	case b >= 0x40 && b <= 0x7e: // final byte
-		e.csi.final = b
-		e.dispatchCSI()
-		e.state = stGround
-		// 其余:吞掉,等 final
-	}
-}
-
-func (e *Emulator) utf8Byte(b byte) {
-	if e.utf8Got == 0 {
-		switch {
-		case b&0xe0 == 0xc0:
-			e.utf8Need = 2
-		case b&0xf0 == 0xe0:
-			e.utf8Need = 3
-		case b&0xf8 == 0xf0:
-			e.utf8Need = 4
-		default:
-			return // 无效首字节:忽略
-		}
-		e.utf8Buf[0] = b
-		e.utf8Got = 1
-		return
-	}
-	if b&0xc0 != 0x80 {
-		// 续字节不连续:丢弃已缓冲,把当前字节当新序列开头
-		e.utf8Need, e.utf8Got = 0, 0
-		e.utf8Byte(b)
-		return
-	}
-	e.utf8Buf[e.utf8Got] = b
-	e.utf8Got++
-	if e.utf8Got == e.utf8Need {
-		r, _ := utf8.DecodeRune(e.utf8Buf[:e.utf8Got])
-		e.utf8Need, e.utf8Got = 0, 0
-		e.putRune(r)
-	}
-}
-
-func (e *Emulator) putRune(r rune) {
-	if r == kittyPlaceholder {
-		// kitty 协议的可视占位字符(U+10EEEE):本仿真器不支持虚拟占位,
-		// 直接跳过,避免在文本里显示奇怪字符。
-		return
-	}
-	w := widthCond.RuneWidth(r)
-	if w <= 0 {
-		// 组合/零宽字符:M1 忽略
-		return
-	}
-	if e.pendingWrap {
-		e.lineFeed()
-		e.col = 0
-		e.pendingWrap = false
-	}
-	// 宽字符放不进最后一格:先换行再写
-	if w == 2 && e.col >= e.cols-1 {
-		e.lineFeed()
-		e.col = 0
-	}
-
-	cell := blankCell(e.style.bg)
-	cell.Rune = r
-	e.style.applyTo(&cell)
-	e.grid().set(e.row, e.col, cell)
-	e.col++
-	if w == 2 {
-		// 宽字符的第二格是占位格(Rune==0),渲染时跳过
-		e.grid().set(e.row, e.col, Cell{})
-		e.col++
-	}
-	if e.col >= e.cols {
-		e.col = e.cols - 1
-		e.pendingWrap = true
-	}
-}
-
-// lineFeed moves the cursor down one line, scrolling the region at its
-// bottom edge (xterm behavior: a cursor outside the scroll region just
-// moves without scrolling).
-func (e *Emulator) lineFeed() {
-	if e.row == e.scrollBottom {
-		e.grid().scrollUp(e.scrollTop, e.scrollBottom, e.style.bg)
-	} else if e.row < e.rows-1 {
-		e.row++
-	}
-}
-
-func (e *Emulator) reverseIndex() {
-	if e.row == e.scrollTop {
-		e.grid().scrollDown(e.scrollTop, e.scrollBottom, e.style.bg)
-	} else if e.row > 0 {
-		e.row--
-	}
-}
-
-// reset implements RIS: the whole terminal state returns to its defaults.
-func (e *Emulator) reset() {
-	e.main.clear(DefaultColor())
-	e.alt.clear(DefaultColor())
-	e.useAlt = false
-	e.style.reset()
-	e.row, e.col = 0, 0
-	e.savedRow, e.savedCol = 0, 0
-	e.scrollTop, e.scrollBottom = 0, e.rows-1
-	e.pendingWrap = false
-	e.cursorVisible = true
-	e.images = nil
-	e.kittyPending = kittyPending{}
-	e.oscBuf, e.dcsBuf, e.apcBuf = nil, nil, nil
-	e.oscFull, e.dcsFull, e.apcFull = false, false, false
-	e.answers = e.answers[:0]
-}
+// ---------------------------------------------------------------------------
+// helpers
 
 // parseParams splits a CSI parameter string on ';' and ':' (':'-separated
 // extensions like SGR 4:3 degrade gracefully). Empty segments and empty
-// sequences yield 0, which dispatch treats as the per-instruction default.
+// sequences yield 0.
 func parseParams(b []byte) []int {
 	params := []int{}
 	start := 0
@@ -706,333 +894,4 @@ func parseParams(b []byte) []int {
 		params = append(params, 0)
 	}
 	return params
-}
-
-// oneOr returns params[i] when present and non-zero, otherwise dflt.
-func oneOr(params []int, i, dflt int) int {
-	if i < len(params) && params[i] > 0 {
-		return params[i]
-	}
-	return dflt
-}
-
-func (e *Emulator) dispatchCSI() {
-	params := parseParams(e.csi.paramStr)
-	// 终端查询(DSR/DA/DECRQM)优先应答——程序在收到应答前会阻塞。
-	if e.csi.final == 'n' || e.csi.final == 'c' || (e.csi.priv && e.csi.final == 'p') {
-		e.answerQuery(params)
-		return
-	}
-	if e.csi.priv {
-		e.decPrivate(params, e.csi.final == 'h')
-		return
-	}
-	switch e.csi.final {
-	case 'A':
-		e.row = max(0, e.row-oneOr(params, 0, 1))
-	case 'B':
-		e.row = min(e.rows-1, e.row+oneOr(params, 0, 1))
-	case 'C':
-		e.col = min(e.cols-1, e.col+oneOr(params, 0, 1))
-	case 'D':
-		e.col = max(0, e.col-oneOr(params, 0, 1))
-	case 'E':
-		e.row = min(e.rows-1, e.row+oneOr(params, 0, 1))
-		e.col = 0
-	case 'F':
-		e.row = max(0, e.row-oneOr(params, 0, 1))
-		e.col = 0
-	case 'G':
-		e.col = min(e.cols-1, max(0, oneOr(params, 0, 1)-1))
-	case 'd':
-		e.row = min(e.rows-1, max(0, oneOr(params, 0, 1)-1))
-	case 'H', 'f':
-		e.row = min(e.rows-1, max(0, oneOr(params, 0, 1)-1))
-		e.col = min(e.cols-1, max(0, oneOr(params, 1, 1)-1))
-		e.pendingWrap = false
-	case 'J':
-		e.eraseInDisplay(params[0])
-	case 'K':
-		e.eraseInLine(params[0])
-	case 'm':
-		e.applySGR(params)
-	case 'r':
-		e.setScrollRegion(params)
-	case 's':
-		e.savedRow, e.savedCol = e.row, e.col
-	case 'u':
-		e.row, e.col = e.savedRow, e.savedCol
-		e.pendingWrap = false
-	case 'L':
-		e.insertLines(oneOr(params, 0, 1))
-	case 'M':
-		e.deleteLines(oneOr(params, 0, 1))
-	case 'S':
-		e.scrollUpLines(oneOr(params, 0, 1))
-	case 'T':
-		e.scrollDownLines(oneOr(params, 0, 1))
-		// 其余(DEC private 之外、DSR 'n'、insert/delete char 等):忽略
-	}
-}
-
-// answerQuery responds to terminal queries by appending the reply to the
-// answers buffer (drained via DrainAnswers and written back into the PTY
-// by the caller). Queries must be answered or full-screen programs
-// (vim, htop, mc) hang on startup waiting for a reply.
-func (e *Emulator) answerQuery(params []int) {
-	switch e.csi.final {
-	case 'n': // DSR — device status report
-		switch {
-		case len(params) > 0 && params[0] == 6: // cursor position report
-			pos := strconv.Itoa(e.row+1) + ";" + strconv.Itoa(e.col+1)
-			if e.csi.priv {
-				e.answer([]byte("\x1b[?" + pos + "R"))
-			} else {
-				e.answer([]byte("\x1b[" + pos + "R"))
-			}
-		default: // status report (CSI 5 n): "ok"
-			e.answer([]byte("\x1b[0n"))
-		}
-	case 'c': // DA — device attributes
-		if hasByte(e.csi.inter, '>') {
-			// DA2 — xterm-style secondary attributes
-			e.answer([]byte("\x1b[>0;0;0c"))
-		} else {
-			// DA1 — VT100 with Advanced Video Option (most compatible)
-			e.answer([]byte("\x1b[?1;2c"))
-		}
-	case 'p': // DECRQM — CSI ? Ps $ p
-		if !hasByte(e.csi.inter, '$') || len(params) == 0 {
-			return
-		}
-		mode := params[0]
-		e.answer([]byte("\x1b[?" + strconv.Itoa(mode) + ";" + strconv.Itoa(e.decrqmState(mode)) + "$y"))
-	}
-}
-
-// decrqmState reports the mode state for a DECRQM reply:
-// 0 = not recognized, 1 = set, 2 = reset.
-func (e *Emulator) decrqmState(mode int) int {
-	switch mode {
-	case 25:
-		if e.cursorVisible {
-			return 1
-		}
-		return 2
-	case 47, 1047, 1049:
-		if e.useAlt {
-			return 1
-		}
-		return 2
-	default:
-		return 0
-	}
-}
-
-func hasByte(b []byte, target byte) bool {
-	for _, c := range b {
-		if c == target {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Emulator) decPrivate(params []int, set bool) {
-	for _, p := range params {
-		switch p {
-		case 25:
-			e.cursorVisible = set
-		case 47, 1047, 1049:
-			// 备用屏:1049 保存/恢复光标;47/1047 只切换不清屏的细微
-			// 语义差异此处简化(进入一律清屏)。
-			if set && !e.useAlt {
-				e.savedRow, e.savedCol = e.row, e.col
-				e.row, e.col = 0, 0
-				e.pendingWrap = false
-				e.useAlt = true
-				e.alt.clear(e.style.bg)
-			} else if !set && e.useAlt {
-				e.useAlt = false
-				e.row, e.col = e.savedRow, e.savedCol
-				e.pendingWrap = false
-			}
-		}
-	}
-}
-
-// eraseInDisplay implements CSI Ps J.
-func (e *Emulator) eraseInDisplay(mode int) {
-	switch mode {
-	case 0: // 光标 → 屏尾,含光标格
-		e.grid().fill(e.row, e.col, e.rows-1, e.cols-1, e.style.bg)
-	case 1: // 屏首 → 光标:光标前的行整行擦除,最后一行擦到光标列
-		e.grid().fill(0, 0, e.row-1, e.cols-1, e.style.bg)
-		e.grid().fill(e.row, 0, e.row, e.col, e.style.bg)
-	case 2, 3: // 全屏
-		e.grid().clear(e.style.bg)
-	}
-}
-
-// eraseInLine implements CSI Ps K.
-func (e *Emulator) eraseInLine(mode int) {
-	switch mode {
-	case 0: // 光标 → 行尾,含光标格
-		e.grid().fill(e.row, e.col, e.row, e.cols-1, e.style.bg)
-	case 1: // 行首 → 光标,含光标格
-		e.grid().fill(e.row, 0, e.row, e.col, e.style.bg)
-	case 2: // 整行
-		e.grid().fill(e.row, 0, e.row, e.cols-1, e.style.bg)
-	}
-}
-
-// setScrollRegion implements CSI Ps;Ps r (DECSTBM). The cursor is homed
-// afterwards, as DEC requires.
-func (e *Emulator) setScrollRegion(params []int) {
-	top := max(0, min(e.rows-1, oneOr(params, 0, 1)-1))
-	bottom := e.rows - 1
-	if len(params) > 1 && params[1] > 0 {
-		bottom = min(e.rows-1, params[1]-1)
-	}
-	if top >= bottom {
-		return
-	}
-	e.scrollTop, e.scrollBottom = top, bottom
-	e.row, e.col = 0, 0
-	e.pendingWrap = false
-}
-
-func (e *Emulator) scrollUpLines(n int) {
-	if n <= 0 {
-		n = 1
-	}
-	for i := 0; i < n; i++ {
-		e.grid().scrollUp(e.scrollTop, e.scrollBottom, e.style.bg)
-	}
-}
-
-func (e *Emulator) scrollDownLines(n int) {
-	if n <= 0 {
-		n = 1
-	}
-	for i := 0; i < n; i++ {
-		e.grid().scrollDown(e.scrollTop, e.scrollBottom, e.style.bg)
-	}
-}
-
-// insertLines implements CSI Ps L: blank lines push the cursor line down,
-// the region's bottom lines are lost.
-func (e *Emulator) insertLines(n int) {
-	if e.row < e.scrollTop || e.row > e.scrollBottom || n <= 0 {
-		return
-	}
-	g := e.grid()
-	for r := e.scrollBottom; r >= e.row+n; r-- {
-		copy(g.cells[r], g.cells[r-n])
-	}
-	for r := e.row; r < e.row+n && r <= e.scrollBottom; r++ {
-		e.clearRow(r)
-	}
-}
-
-// deleteLines implements CSI Ps M: the cursor line and the following ones
-// move up, the region's bottom lines become blank.
-func (e *Emulator) deleteLines(n int) {
-	if e.row < e.scrollTop || e.row > e.scrollBottom || n <= 0 {
-		return
-	}
-	g := e.grid()
-	for r := e.row; r <= e.scrollBottom-n; r++ {
-		copy(g.cells[r], g.cells[r+n])
-	}
-	for r := e.scrollBottom - n + 1; r <= e.scrollBottom; r++ {
-		e.clearRow(r)
-	}
-}
-
-func (e *Emulator) clearRow(r int) {
-	e.grid().fill(r, 0, r, e.cols-1, e.style.bg)
-}
-
-// applySGR implements CSI Ps m (only the subset meaningful for capture).
-func (e *Emulator) applySGR(params []int) {
-	for i := 0; i < len(params); i++ {
-		p := params[i]
-		switch {
-		case p == 0:
-			e.style.reset()
-		case p == 1:
-			e.style.bold = true
-		case p == 2:
-			e.style.dim = true
-		case p == 3:
-			e.style.italic = true
-		case p == 4 || p == 21:
-			e.style.underline = true
-		case p == 5:
-			e.style.blink = true
-		case p == 7:
-			e.style.reverse = true
-		case p == 8:
-			e.style.invisible = true
-		case p == 9:
-			e.style.strikethrough = true
-		case p == 22:
-			e.style.bold, e.style.dim = false, false
-		case p == 23:
-			e.style.italic = false
-		case p == 24:
-			e.style.underline = false
-		case p == 25:
-			e.style.blink = false
-		case p == 27:
-			e.style.reverse = false
-		case p == 28:
-			e.style.invisible = false
-		case p == 29:
-			e.style.strikethrough = false
-		case p >= 30 && p <= 37:
-			e.style.fg = Color{Mode: ColorIndex, Index: uint8(p - 30)}
-		case p == 38:
-			if i+1 < len(params) && params[i+1] == 5 && i+2 < len(params) {
-				e.style.fg = Color{Mode: ColorIndex, Index: uint8(params[i+2])}
-				i += 2
-			} else if i+1 < len(params) && params[i+1] == 2 && i+4 < len(params) {
-				e.style.fg = Color{Mode: ColorRGB, RGB: rgb24(params[i+2], params[i+3], params[i+4])}
-				i += 4
-			}
-		case p == 39:
-			e.style.fg = DefaultColor()
-		case p >= 40 && p <= 47:
-			e.style.bg = Color{Mode: ColorIndex, Index: uint8(p - 40)}
-		case p == 48:
-			if i+1 < len(params) && params[i+1] == 5 && i+2 < len(params) {
-				e.style.bg = Color{Mode: ColorIndex, Index: uint8(params[i+2])}
-				i += 2
-			} else if i+1 < len(params) && params[i+1] == 2 && i+4 < len(params) {
-				e.style.bg = Color{Mode: ColorRGB, RGB: rgb24(params[i+2], params[i+3], params[i+4])}
-				i += 4
-			}
-		case p == 49:
-			e.style.bg = DefaultColor()
-		case p >= 90 && p <= 97:
-			e.style.fg = Color{Mode: ColorIndex, Index: uint8(p - 90 + 8)}
-		case p >= 100 && p <= 107:
-			e.style.bg = Color{Mode: ColorIndex, Index: uint8(p - 100 + 8)}
-		}
-	}
-}
-
-func rgb24(r, g, b int) uint32 {
-	return uint32(clamp255(r))<<16 | uint32(clamp255(g))<<8 | uint32(clamp255(b))
-}
-
-func clamp255(n int) int {
-	if n < 0 {
-		return 0
-	}
-	if n > 255 {
-		return 255
-	}
-	return n
 }

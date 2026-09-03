@@ -1,6 +1,14 @@
-# 优化 2:native 仿真器完整度 —— 查询应答与缺失 CSI 对齐
+# 优化 2:native 仿真器完整度 —— 选用现成仿真器或补齐手写引擎
 
-> 状态:**待实施**(对标 `tu` 的 alacritty_terminal 方案调研结论)
+> 状态:**已实施(路线 A:x/vt 替换,2026-08-29)**
+>
+> 实施摘要:仿真层换成 `charmbracelet/x/vt` 外观(§3.1/§3.2);图形提取保留
+> 自家 `graphics.go` 并行扫描(§2.5);补偿了 x/vt 的四处缺口——行尾放不下
+> 的宽字符换行、IRM 插入模式、ANSI `CSI s/u`、宽字符 REP;capture PTY 改
+> raw 模式避免了回显/规范缓冲吞掉应答;两组回归通过(vim 0.02s 退出、
+> htop 界面完整)。x/vt 未实现且本层未补偿的:`CSI 1 J` 整行擦除(ED1 语义
+> 以 x/vt 为准)、DECRQM 对 ANSI 模式 4 的应答为 0(仅应答已跟踪的私有
+> 模式)。`—answer-queries` 开关已落地 serve。
 >
 > 背景:`tu` 直接复用 alacritty 的仿真器,能应答 Device Attributes/光标位置
 > 等终端查询,所以 vim/less/mc 不会卡在启动。我们的 `internal/capture/
@@ -14,8 +22,12 @@
 > 2. **部分 CSI 缺失**:insert/delete char、erase char、repeat 等,少数 TUI
 >    用它们画界面,缺失会导致画面错位。
 >
-> 结论:继续手写(Go 生态没有 alacritty_terminal 等价物,移植 C 系仿真器超纲),
-> 但补齐"查询应答 + 缺失 CSI + 尺寸变化",并用一致性测试锁住行为。
+> **结论(修正)**:2026-08 调研确认 Go 生态存在 alacritty_terminal 的等价物——
+> [charmbracelet/x/vt](https://github.com/charmbracelet/x)(完整 VT 仿真 + DSR/CPR
+> 内建应答 + vttest 一致性工作流,见 §2),"Go 生态没有等价物"不再成立。本优化
+> 优先**替换**为现成仿真器(x/vt);若接入成本过高(依赖面、CJK 宽度语义差异),
+> 回退**手写补齐**。两条路线共用 §3 的接入点设计,图形协议解码在任何路线下
+> 都保留在自家 `graphics.go`。
 
 ## 1. 现状盘点(`internal/capture/emulator.go`)
 
@@ -38,58 +50,127 @@ iTerm2 图形提取(OSC/DCS/APC 三路,16MB 上限)、光标可见性(?25)。
 | 窗口操作 | `CSI Ps t` | 吞掉 | 正确(窗口操作对快照无意义) |
 | 尺寸变化 | `Emulator.Resize(cols, rows)` | **没有此方法** | 0001 镜像随 PTY resize 失效 |
 
-## 2. 设计
+## 2. 现成仿真器选型(2026-08 调研)
 
-### 2.1 查询应答器(answerer)
+### 2.1 候选盘点
 
-- 新增应答通道:`Emulator` 增加只读"应答队列"(如 `func (e *Emulator)
-  Answers() []byte`,消费后清空),仿真器解析到查询序列时把应答字节压入队列;
-  由调用方(outputPump / capture driver)把应答写回 PTY。
-- 应答内容(对齐 xterm 默认行为):
-  - DA1(`CSI c` 无参数)→ `CSI ? 6 c`(VT102 with advanced video,最通用);
-  - DA2(`CSI > c`)→ `CSI > 0;0;0c`(xterm 兼容格式);
-  - DSR 5 → `CSI 0 n`;DSR 6 → `CSI {row+1};{col+1}R`(1-based);
-  - DECRQM(`CSI ? Ps $ p`)→ `CSI ? Ps;0 $ y`(0 = 未识别,或按实际状态
-    应答 ?25/?1049 等已跟踪的模式);
-  - OSC 10/11/12 → `OSC 10;rgb:rrrr/gggg/bbbb BEL`(用当前调色板
-    `palette` 应答;无调色板配置时可不答或答默认色)。
+| 库 | 定位 | 许可/活跃 | 查询应答 | Resize | 图形解码 |
+|---|---|---|---|---|---|
+| **[charmbracelet/x/vt](https://github.com/charmbracelet/x)(`x/vt` 独立模块)** | 完整 VT 仿真器(C SI/OSC/DCS/ESC、screen/buffer、scrollback、damage、mouse/focus、`SafeEmulator`) | MIT,极活跃(2026-08) | ✅ DSR/CPR **内建**(应答写内部 `pw` 管道) | ✅ | ❌ |
+| **[charmbracelet/x/vttest](https://github.com/charmbracelet/x)(同仓库)** | 创建 PTY、随时抓取屏幕状态的虚拟终端(≈capture 场景) | MIT,同上 | (基于 x/vt) | ✅ | ❌ |
+| **[charmbracelet/ultraviolet](https://github.com/charmbracelet/ultraviolet)** | 渲染层(Bubble Tea 兼容);fuzz 对照 **libghostty-vt** 真实仿真器 | MIT,376★,活跃 | — | — | ❌ |
+| **[taigrr/bubbleterm](https://github.com/taigrr/bubbleterm)** | 无头嵌入式仿真器(基于 x/vt + ultraviolet) | 0BSD,活跃 | ✅ DA1 **自动应答并回写 PTY**(有防死锁测试) | ✅ | ❌ |
+| **[rcarmo/go-te](https://github.com/rcarmo/go-te)** | pyte 忠实 Go 移植 + **ESCTest2 一致性套件** | MIT,新但活跃 | ✅ 回调式(`ReportDeviceAttributes/Status/Mode`) | ✅ | ❌ |
+| [hinshun/vt10x](https://github.com/hinshun/vt10x) | 老牌 VT10x 后端 | MIT,2023 停更 | ❌ | — | ❌ |
+| [buildkite/terminal](https://github.com/buildkite/terminal) | ANSI→HTML 日志渲染(非屏幕网格模型) | MIT,活跃 | — | — | — |
+| [charmbracelet/x/ansi](https://github.com/charmbracelet/x) | parser 非完整仿真器(自研引擎时的解析层) | MIT,活跃 | — | — | ❌(只能**生成** iTerm2 序列) |
+
+### 2.2 推荐路线:x/vt(含 vttest 生态)
+
+选 x/vt 而非其他候选的理由:
+
+- **查询应答开箱即用**:`handlers.go` 中 DSR 5/6、DECXCPR 已实现,应答写入
+  仿真器内部 `pw` 管道——正是我们要的"应答字节通道",对应 §3.1 的接入点;
+- **完整度对齐 tu 的 alacritty_terminal**:screen/scrollback/damage/cursor/
+  mouse/focus/模式管理全有,含 `SafeEmulator` 线程安全封装(0001 镜像共享
+  读屏需要);附 vttest 一致性工作流(`vt.yml`/`vttest.yml`),替代手写
+  一致性测试;
+- **生态可复用**:`x/vttest` 的"PTY + 随时抓屏"就是 capture 场景的样板;
+  ultraviolet 用真实 ghostty vt 做 fuzz 对照,渲染语义可信;
+- **许可友好**:MIT(与项目一致),独立 go.mod 模块,引入成本低。
+
+### 2.3 备选:go-te
+
+若 x/vt 的接入出现问题(CJK 宽度语义、依赖面),备选 go-te:ESCTest2 背书、
+`ReportDeviceAttributes/ReportDeviceStatus/ReportMode` 回调式应答与 Diff/
+History screen 都很贴合,`Resize` 具备。代价:较新(2026-02)、社区活跃度
+不如 Charm、无渲染生态。
+
+### 2.4 不推荐与排除
+
+- vt10x:停更 3 年,VT102 能力面,无应答;
+- buildkite/terminal:日志→HTML 定位,非屏幕模型;
+- 自研 parser + 自写屏幕层(x/ansi):等于重复造轮子,仅当两条路线都失败
+  时才考虑。
+
+### 2.5 替换取舍:图形协议保留策略
+
+现成仿真器均**不支持** kitty/sixel/iTerm2 图形解码(x/ansi 也只能"生成"
+iTerm2 序列)。策略:仿真/读屏层交给 x/vt,**图片提取保留在自家
+`internal/capture/graphics.go`**——在字节流喂给仿真器的同时并行解析
+OSC/DCS/APC 提取 `ImageAsset`(与仿真器状态解耦,尺寸/坐标按放置序列
+自行换算)。这与 0001"渲染栈复用"的分层思路一致:读屏归仿真器,图片归
+提取器。
+
+## 3. 设计
+
+### 3.1 查询应答接入(两条路线共用)
+
+- 应答通道:由"仿真器内建"(路线 A:x/vt `pw` 管道)或"手写队列"(路线 B:
+  `Answers()` 只读队列)提供,调用方式统一为"读循环取应答 → 写回 PTY"。
 - 接入点:
-  - **capture driver**(`internal/capture/driver.go`):读循环里每次 `emu.Write`
-    后取 `Answers()` 写回 PTY——native 引擎立即获得"vim 能启动"的能力;
+  - **capture driver**(`internal/capture/driver.go`):读循环里每次喂字节后
+    取应答写回 PTY——native 引擎立即获得"vim 能启动"的能力;
   - **serve outputPump**(`internal/session/session.go`):仅在**无浏览器客户端
     附着**时应答(有人附着时 xterm 会答,双应答会污染);0001 的 agent 驱动
     场景即属此类。可选开关 `--answer-queries=false` 关闭。
-- 应答字节与"程序实际预期"的一致性:DA 应答只需让程序认为终端存在,
-    不必逐版本精确;按 xterm 默认应答即可(与浏览器端 xterm.js 的应答同为
-    兼容路线)。
+- 应答内容对齐 xterm 默认(DA1 → `CSI ? 6 c`、DA2 → `CSI > 0;0;0c`、DSR 5
+  → `CSI 0 n`、DSR 6 → `CSI {r+1};{c+1}R`、DECRQM → `CSI ? Ps;0 $ y`、
+  OSC 10/11/12 → 用调色板应答);x/vt 未覆盖的项(DECRQM、OSC 色查询)在
+  接入层补答。
 
-### 2.2 缺失 CSI 补齐
+### 3.2 路线 A:x/vt 替换(推荐)
 
-- `@` ICH / `P` DCH / `X` ECH:与现有 `L`/`M`(insert/delete lines)同构,
-  在行内做 copy 移位 + 空白填充,遵守滚动区与行尾边界。
-- `b` REP:重复前一字符 n 次(等价于把前一 putRune 再执行 n 次;需记录
-  `lastRune` 与当时 style,注意宽字符语义)。
-- `h`/`l` 非私有模式:IRM(4)——插入模式后续字符前移,与 `@` 共用移位
-  逻辑;DECAWM(7)——关闭时 `putRune` 到行尾不再换行,而是原地覆盖
-  (`pendingWrap` 不置位);LNM(20)——LF 后额外 CR(可答状态但不启用,
-  现代程序不用)。
-- `g` TBC:维护 256 列 tabstop 位图(默认 8 列一个),`CSI 0 g` 清当前列、
-  `CSI 3 g` 全清;`TAB` 前进逻辑改查位图。
-- `Emulator.Resize(cols, rows)`:重建两个 Grid 为新尺寸,内容按左上角
-  截断/补齐,滚动区与光标位置夹紧,清空应答与图形暂存(尺寸突变时
-  kitty 放置坐标会失效,直接清 images 最稳)。
+1. **依赖**:`go.mod` 引入 `github.com/charmbracelet/x/vt`(独立模块)。
+2. **仿真核心**:`internal/capture` 的仿真层从 `Emulator` 换成 x/vt
+   (并发场景用 `SafeEmulator`);Cell 映射:x/vt 的 cell 字段 → 我们的
+   `Color/Cell` 与 RenderDocument `cells[]`(字段名对照在实现时固化);
+   text/json/html/png 渲染逻辑保留,只换输入仿真层。
+3. **Resize / scrollback / damage**:随 x/vt 免费获得;damage 可留作将来
+   差分监控(对标 tu monitor)的储备。
+4. **宽度语义验证(关键风险)**:当前用 `runewidth{EastAsianWidth:false}`
+   刻意对齐浏览器端 xterm.js;x/vt 走 uax29/displaywidth,需用 §3.4 的
+   golden(vim/htop/w3m/less + CJK 用例)验证差异;若不可接受,回退路线 B
+   或叠加宽度适配层。
+5. **图片提取**:保留 `graphics.go`,与 x/vt 并行从字节流提取(§2.5)。
 
-### 2.3 一致性测试(锁行为)
+### 3.3 路线 B:手写补齐(兜底)
 
-- 每个新增 CSI 的单元测试(参数边界、滚动区交互、宽字符)。
-- **vttest 子集**:用 vttest 的 Screen 测试(光标移动、擦除、滚动区、DECAWM、
-  tabstop)跑一遍,把通过的用例固化为 fixtures(输出字节流 → 期望 Grid)。
+仅在路线 A 验证失败时采用:
+
+- 应答队列与 DA/DSR/DECRQM/OSC10-12 应答(内容见 §3.1);
+- 缺 CSI:`@` ICH / `P` DCH / `X` ECH(与 L/M 同构的行内移位)、`b` REP
+  (记录 lastRune+style,注意宽字符)、`h`/`l` 非私有模式(IRM/DECAWM/LNM)、
+  `g` TBC(tabstop 位图);
+- `Emulator.Resize(cols, rows)`:重建 Grid 按左上角截断/补齐,滚动区与
+  光标夹紧,清图形暂存。
+
+### 3.4 一致性测试(锁行为)
+
+- 每个新增/涉及序列的单元测试(参数边界、滚动区交互、宽字符)。
+- **vttest/ESCTest2**:x/vt 自带 vttest 工作流;手写路线用 vttest 子集固化为
+  fixtures(输出字节流 → 期望 Grid)。
 - **真实程序 golden**:`vim -u NONE -c 'q'`、`htop -d 1`、`w3m`、`less`
-  的 PTY 输出流固化为 fixture,断言启动后 1s 内快照含预期内容(防回归挂起)。
-- 现状先补两个回归用例:① DA/DSR 查询后 vim 能在 1s 内退出;② 无应答时
-  capture 超时兜底路径仍可用。
+  的 PTY 输出流固化为 fixture,断言启动后 1s 内快照含预期内容(防回归挂起);
+  替换前后 golden 快照对比(路线 A 验收)。
+- 回归用例:① DA/DSR 查询后 vim 能在 1s 内退出;② 无应答时 capture 超时
+  兜底路径仍可用。
 
-## 3. 涉及文件
+## 4. 涉及文件(按路线)
+
+### 路线 A(x/vt 替换)
+
+| 文件 | 改动 |
+|---|---|
+| `go.mod` | + `github.com/charmbracelet/x/vt` |
+| `internal/capture/emulator.go` | 仿真核心替换为 x/vt(或薄封装);Cell 映射层;`Resize` 直接用 x/vt |
+| `internal/capture/graphics.go` | 保留,改为独立于仿真器的图片提取 |
+| `internal/capture/driver.go` | 应答回写改读 x/vt `pw` |
+| `internal/session/session.go` | outputPump 无客户端时回写应答(经 `--answer-queries`) |
+| `cmd/serve.go` / `internal/config` | `--answer-queries` 选项 |
+| `internal/capture/emulator_test.go` | golden 对比测试(替换前后快照一致性) |
+
+### 路线 B(手写补齐)
 
 | 文件 | 改动 |
 |---|---|
@@ -100,19 +181,21 @@ iTerm2 图形提取(OSC/DCS/APC 三路,16MB 上限)、光标可见性(?25)。
 | `cmd/serve.go` / `internal/config` | `--answer-queries` 选项 |
 | `docs/design/capture-design.md` | native 引擎能力说明更新 |
 
-## 4. 验收标准
+## 5. 验收标准
 
 1. `gotty capture -- vim -u NONE -c 'q'` 在 2s 内完成且无超时告警;
 2. `gotty capture -- htop -d 1` 快照含 htop 界面(非空屏);
 3. 0001 的 `POST /keys` 驱动 vim 时无需浏览器客户端,DA/DSR 不挂起;
 4. `Resize` 后镜像快照与浏览器视角一致(0001 联调);
-5. `go test ./internal/capture/` 全绿,新增 vttest 子集 fixtures 通过。
+5. [路线 A] x/vt 替换后 golden 快照与替换前一致(vim/htop/w3m/less)、
+   CJK 宽度与浏览器端一致;
+6. `go test ./internal/capture/` 全绿。
 
-## 5. 不做的事(范围外)
+## 6. 不做的事(范围外)
 
-- 不移植/引入 C 系或 Rust 系完整仿真器(超纲;手写 + 一致性测试足够覆盖
-  capture 与 agent 驱动场景)。
-- 不做滚动回看(scrollback)——快照只需当前屏,保持网格固定尺寸。
-- 不做字符集/双宽历史遗留(ESC ( 系列已消费忽略,现代 UTF-8 世界足够)。
+- 不移植 C/Rust 系仿真器——已有 Go 等价物(x/vt),更无移植必要;
+- 不把 scrollback 暴露进 capture 输出模型(屏幕模型保持"当前屏"),即使
+  底层 x/vt 支持 scrollback;
+- 不自研 parser + 屏幕层(x/ansi 路线)——仅当替换与手写都失败才考虑;
 - 不做超链接提取(OSC 8)——如需要可在 JSON cells 里加 `link` 字段,单列
   优化,不阻塞本项。

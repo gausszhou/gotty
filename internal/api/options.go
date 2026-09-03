@@ -17,6 +17,13 @@ type Options struct {
 	// and POST /api/sessions/{id}/wait. Disabling it drops the mirror memory
 	// cost and makes those endpoints return 503.
 	Mirror bool `json:"mirror" flagName:"mirror" flagDescribe:"Keep a screen mirror per session for the agent API (GET /screen, POST /wait)" default:"true"`
+
+	// AnswerQueries answers terminal queries (DA/DSR/DECRQM/OSC colors)
+	// from the screen mirror when no browser client is attached — the
+	// browser's own xterm answers them otherwise. Full-screen programs
+	// (vim, htop, mc) block on these queries at startup, so leaving this
+	// on is what lets the agent-driving API work without a client.
+	AnswerQueries bool `json:"answer_queries" flagName:"answer-queries" flagDescribe:"Answer terminal queries when no browser client is attached" default:"true"`
 	// Timeout 是会话淘汰策略:超过该秒数没有任何客户端附着(浏览器全关/
 	// 断连)即销毁 PTY 进程;会话记录保留,可凭 id 重新运行。默认 900s。
 	Timeout int `json:"timeout" flagName:"timeout" flagDescribe:"Idle timeout seconds for destroying unattached sessions (0 to disable)" default:"900"`

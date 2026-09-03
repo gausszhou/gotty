@@ -26,6 +26,9 @@ type Terminal struct {
 	closeTimeout time.Duration
 	size         pty.Winsize
 
+	// rawMode configures the PTY slave as a raw terminal (see WithRawMode).
+	rawMode bool
+
 	cmd *exec.Cmd
 	pty *os.File
 
@@ -69,7 +72,34 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 
 	var ptmx *os.File
 	var err error
-	if term.size.Cols > 0 && term.size.Rows > 0 {
+	if term.rawMode {
+		// 原始模式:自管 PTY。pty.Open 同时给出 master 与 slave fd,
+		// 在 slave(程序一侧)上先设 raw 再启动进程——不能走
+		// pty.StartWithSize 的名字解析(master.Name() 只回 /dev/ptmx,
+		// 用它重开每次都会新建一对无用的 PTY)。
+		rawPTMX, rawTTY, oerr := pty.Open()
+		if oerr != nil {
+			return nil, fmt.Errorf("failed to open raw pty: %w", oerr)
+		}
+		if term.size.Cols > 0 && term.size.Rows > 0 {
+			_ = pty.Setsize(rawPTMX, &term.size)
+		}
+		if rerr := rawSlave(rawTTY); rerr != nil {
+			rawTTY.Close()
+			rawPTMX.Close()
+			return nil, fmt.Errorf("failed to set raw mode on terminal: %w", rerr)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = rawTTY, rawTTY, rawTTY
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+		err = cmd.Start()
+		// 子进程已继承 slave fd;父进程侧关闭,避免干扰 termios 引用计数。
+		rawTTY.Close()
+		if err != nil {
+			rawPTMX.Close()
+		} else {
+			ptmx = rawPTMX
+		}
+	} else if term.size.Cols > 0 && term.size.Rows > 0 {
 		ptmx, err = pty.StartWithSize(cmd, &term.size)
 	} else {
 		ptmx, err = pty.Start(cmd)
@@ -79,12 +109,15 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 	}
 	term.pty = ptmx
 
-	// When the process exits, close the PTY so that Read() breaks with EOF.
+	// 进程退出后不立即关闭 master:PTY slave 挂起(hangup)会让 master
+	// 的 read 先返回缓冲中尚未取走的数据、再返回 EIO——读者(驱动/session
+	// pump)因此得以收下进程的最后一块输出。若在 cmd.Wait() 返回的同一
+	// 瞬间关闭 master,缓冲数据会随 EBADF 一起丢失(读与关闭的竞态,
+	// 快速退出的进程最易触发)。master 由 Close()/调用方统一回收。
 	go func() {
 		term.waitMu.Lock()
 		term.waitErr = cmd.Wait()
 		term.waitMu.Unlock()
-		ptmx.Close()
 		close(term.exited)
 	}()
 

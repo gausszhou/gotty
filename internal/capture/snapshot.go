@@ -20,13 +20,14 @@ type Snapshot struct {
 
 // Snapshot returns a deep copy of the current screen state.
 func (e *Emulator) Snapshot() *Snapshot {
+	row, col := e.Cursor()
 	return &Snapshot{
-		Cols:          e.cols,
-		Rows:          e.rows,
-		CursorRow:     e.row,
-		CursorCol:     e.col,
-		CursorVisible: e.cursorVisible,
-		Images:        append([]ImageAsset(nil), e.images...),
+		Cols:          e.Cols(),
+		Rows:          e.Rows(),
+		CursorRow:     row,
+		CursorCol:     col,
+		CursorVisible: e.CursorVisible(),
+		Images:        append([]ImageAsset(nil), e.Images()...),
 		CellW:         e.cellW,
 		CellH:         e.cellH,
 		TakenAt:       time.Now(),

@@ -142,9 +142,11 @@ func (e *Emulator) finishKitty(keys map[string]string, payload []byte) {
 	e.addImage(ProtoKitty, img, mime, raw, keys)
 }
 
-// handleOSC inspects a completed OSC string (… BEL or … ESC \). Only the
-// iTerm2 inline-image form (OSC 1337;File=…;inline=1:<base64>) is handled;
-// other OSC payloads (titles, clipboard, color queries) are ignored.
+// handleOSC processes a complete OSC payload (… BEL or … ESC \), as framed
+// by the emulator's byte scanner. OSC 10/11/12 color queries are answered
+// by the underlying x/vt emulator itself; here only the iTerm2 inline-image
+// form (OSC 1337;File=…;inline=1:<base64>) is extracted; other OSC payloads
+// (titles, clipboard) are ignored.
 func (e *Emulator) handleOSC(osc []byte) {
 	const prefix = "1337;File="
 	if !bytes.HasPrefix(osc, []byte(prefix)) {
@@ -170,10 +172,11 @@ func (e *Emulator) handleOSC(osc []byte) {
 		cellCols = max(1, int(float64(img.Bounds().Dx())*float64(e.cellH)/
 			float64(img.Bounds().Dy())/float64(e.cellW)+0.5))
 	}
+	x, y := e.cursorXY()
 	a := ImageAsset{
 		Protocol: ProtoITerm2,
-		Row:      e.row,
-		Col:      e.col,
+		Row:      y,
+		Col:      x,
 		CellCols: cellCols,
 		CellRows: 1,
 		Width:    img.Bounds().Dx(),
@@ -211,12 +214,13 @@ func (e *Emulator) handleDCS(dcs []byte) {
 	if err != nil {
 		return
 	}
+	x, y := e.cursorXY()
 	a := ImageAsset{
 		Protocol: ProtoSixel,
-		Row:      e.row,
-		Col:      e.col,
-		CellCols: min(e.cols-e.col, max(1, intDivCeil(img.Bounds().Dx(), e.cellW))),
-		CellRows: min(e.rows-e.row, max(1, intDivCeil(img.Bounds().Dy(), e.cellH))),
+		Row:      y,
+		Col:      x,
+		CellCols: min(e.Cols()-x, max(1, intDivCeil(img.Bounds().Dx(), e.cellW))),
+		CellRows: min(e.Rows()-y, max(1, intDivCeil(img.Bounds().Dy(), e.cellH))),
 		Width:    img.Bounds().Dx(),
 		Height:   img.Bounds().Dy(),
 		MIME:     "image/png",
@@ -230,6 +234,7 @@ func (e *Emulator) handleDCS(dcs []byte) {
 // c/r cell-rectangle, cursor movement per the protocol spec.
 func (e *Emulator) addImage(proto ImageProtocol, img image.Image, mime string, raw []byte, keys map[string]string) {
 	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	x, y := e.cursorXY()
 	// c/r specify the display rectangle in cells; otherwise scale by pixels.
 	cellCols, cellRows := atoi(keys["c"]), atoi(keys["r"])
 	if cellCols <= 0 && cellRows <= 0 {
@@ -240,16 +245,16 @@ func (e *Emulator) addImage(proto ImageProtocol, img image.Image, mime string, r
 	} else if cellRows <= 0 {
 		cellRows = max(1, intDivCeil(h*cellCols, w))
 	}
-	cellCols = min(e.cols-e.col, cellCols)
-	cellRows = min(e.rows-e.row, cellRows)
+	cellCols = min(e.Cols()-x, cellCols)
+	cellRows = min(e.Rows()-y, cellRows)
 	if cellCols <= 0 || cellRows <= 0 {
 		return
 	}
 
 	a := ImageAsset{
 		Protocol: proto,
-		Row:      e.row,
-		Col:      e.col,
+		Row:      y,
+		Col:      x,
 		CellCols: cellCols,
 		CellRows: cellRows,
 		Width:    w,
@@ -262,17 +267,19 @@ func (e *Emulator) addImage(proto ImageProtocol, img image.Image, mime string, r
 
 	// Per the spec the cursor moves right by the placement width and down by
 	// its height (wrapping at the right edge).
-	e.col += cellCols
-	if e.col >= e.cols {
-		e.row = min(e.rows-1, e.row+1)
-		e.col = 0
+	nx, ny := x+cellCols, y
+	if nx >= e.Cols() {
+		ny = min(e.Rows()-1, y+1)
+		nx = 0
 	}
-	e.row = min(e.rows-1, e.row+max(0, cellRows-1))
+	ny = min(e.Rows()-1, ny+max(0, cellRows-1))
+	e.moveCursorTo(ny, nx)
 }
 
 // ---------------------------------------------------------------------------
 // helpers
 
+// parseKittyKeys splits a kitty transmission control header on commas.
 func parseKittyKeys(head string) map[string]string {
 	keys := make(map[string]string)
 	for _, part := range strings.Split(head, ",") {

@@ -83,6 +83,8 @@ func Run(opts Options) (*Result, error) {
 	term, err := terminal.New(opts.Command, opts.Args,
 		terminal.WithInitialSize(cols, rows),
 		terminal.WithCloseTimeout(2*time.Second),
+		// raw:无回显/规范缓冲,查询应答写回程序而非回显到抓取侧
+		terminal.WithRawMode(),
 	)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {

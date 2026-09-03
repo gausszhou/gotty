@@ -161,6 +161,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		session.WithTerminalOptions(*terminalOptions),
 		session.WithStore(store),
 		session.WithMirrorFactory(api.MirrorFactory(appOptions.Mirror)),
+		session.WithAnswerQueries(appOptions.AnswerQueries),
 	)
 
 	srv, err := api.New(manager, appOptions)

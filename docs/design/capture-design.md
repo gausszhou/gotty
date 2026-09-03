@@ -107,19 +107,29 @@ gotty capture --engine browser --session-id abc123abc123abca --format png -o liv
 
 ```
 internal/capture/
-  emulator.go   # VT 状态机 + 屏幕网格：光标/滚动/SGR/擦除/备用屏/边距
+  emulator.go   # x/vt 外观：查询应答队列(DrainAnswers) + 图形帧扫描器 +
+                # Grid 物化 + x/vt 缺口补偿(宽字符行尾换行、IRM、CSI s/u、REP)
   graphics.go   # kitty / iTerm2 inline / sixel 字节流解析 → image.Image + 摆放
   render.go     # 网格 → text / json / html / png（光栅化 + 图片合成）
   driver.go     # 执行 + 等待（exit / 静默 / marker / timeout）+ 快照
 cmd/capture.go  # cobra 子命令，注册进 cmd/root.go 的 init
 ```
 
-- **PTY**：复用 `terminal.New(command, args, terminal.WithInitialSize(w, h))`
-  （`internal/terminal/terminal.go`），读输出喂仿真器，`Wait()` 取退出码。
-  不经会话层/WS，纯本地执行。
-- **文本仿真**：优先集成 `github.com/hinshun/vt10x`（Go VT 仿真后端，屏幕缓冲 +
-  ANSI 颜色 + 备用屏）；不满足处自研最小状态机（~600 行）。宽度一律用
-  `mattn/go-runewidth`（CJK/emoji 必须）。
+- **PTY**：复用 `terminal.New(command, args, terminal.WithInitialSize(w, h),
+  terminal.WithRawMode())`（`internal/terminal/terminal.go`），读输出喂
+  仿真器，`Wait()` 取退出码。raw 模式取消内核回显/规范缓冲：查询应答写回
+  PTY 才能被程序读到(否则被 ECHOCTL 以 `^[` 回显成乱码、dd 等按字节读的
+  程序在规范模式下还会等换行而挂起)。不经会话层/WS，纯本地执行。
+- **文本仿真**：`charmbracelet/x/vt`(独立模块)——完整 VT 仿真器，内建
+  DSR/DA/DECRQM/OSC 颜色查询应答(写内部 pw 管道,由本层泵入应答队列)、
+  备用屏、Resize、按 vttest 一致性。本层做三件事:① 应答队列
+  `DrainAnswers()`(读循环取应答写回 PTY);② 字节帧并行扫描器——在喂
+  x/vt 的同时识别 OSC/DCS/APC 载荷交 graphics.go 提取图片,并跟踪
+  `CSI ? 25 h/l` 光标可见性;③ 补偿 x/vt 缺口:行尾放不下的宽字符先换行
+  (x/vt 会丢弃)、IRM 插入模式注入 ICH、ANSI `CSI s/u` 翻译为 DECSC/DECRC、
+  宽字符 REP 翻译(避免 x/vt 只记录单宽字符)。
+  宽度语义与浏览器端 xterm.js 对齐:ambiguous 按 1 格(CJK 全角仍 2 格),
+  已由单测锁定。
 - **图形协议解码**（服务端从原始字节流直接提取）：
   - kitty：`ESC_G …` 分片重组（`a=0/1/2` 续传、`t=d` base64、`f=100` PNG/JPEG），
     `p=row;col` 定位、`s/v` 缩放、`c=1` 占格；

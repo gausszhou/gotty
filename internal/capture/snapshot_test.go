@@ -22,7 +22,7 @@ func TestSnapshotDeepCopiesGrid(t *testing.T) {
 	assertText(t, e, "hello world")
 
 	// 修改快照网格,仿真器不受影响(行列不共享切片)
-	snap.grid.set(0, 0, Cell{Rune: 'X'})
+	snap.grid.cells[0][0] = Cell{Rune: 'X'}
 	assertText(t, e, "hello world")
 	if got := snap.Text(); got != "Xello" {
 		t.Errorf("mutated snapshot text = %q, want %q", got, "Xello")
@@ -98,7 +98,7 @@ func TestSnapshotIsolatedFromEmulatorState(t *testing.T) {
 	snap := e.Snapshot()
 
 	// 仿真器清屏后,快照仍保留内容
-	e.reset()
+	write(t, e, "\x1bc") // RIS
 	if got := snap.Text(); got != "snap" {
 		t.Errorf("snapshot text after emulator reset = %q, want %q", got, "snap")
 	}

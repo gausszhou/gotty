@@ -38,6 +38,9 @@ type Manager struct {
 	baseOpts    []terminal.Option
 	factory     TerminalFactory
 	mirrorF     MirrorFactory
+	// answerQueries is forwarded to every session: answer terminal queries
+	// from the mirror when no browser client is attached (--answer-queries).
+	answerQueries bool
 }
 
 // MirrorFactory builds the screen mirror for a new session (nil return
@@ -98,6 +101,15 @@ func WithStore(store Store) Option {
 func WithMirrorFactory(f MirrorFactory) Option {
 	return func(m *Manager) {
 		m.mirrorF = f
+	}
+}
+
+// WithAnswerQueries forwards the --answer-queries flag to every session:
+// terminal queries are answered from the mirror when no browser client is
+// attached. Default true when unset.
+func WithAnswerQueries(enabled bool) Option {
+	return func(m *Manager) {
+		m.answerQueries = enabled
 	}
 }
 
@@ -199,7 +211,7 @@ func (m *Manager) CreateWithID(id, command string, args []string, termOpts ...te
 	if m.mirrorF != nil {
 		mirror = m.mirrorF(term)
 	}
-	s := New(id, term, WithScreenMirror(mirror))
+	s := New(id, term, WithScreenMirror(mirror), withAnswerQueries(m.answerQueries))
 	m.sessions[s.ID()] = s
 
 	meta := Metadata{

@@ -514,3 +514,60 @@ func TestSessionResizeSyncsMirror(t *testing.T) {
 		t.Errorf("resizes = %v, want [[100 40]]", got)
 	}
 }
+
+// 查询应答回写:无客户端附着且 answerQueries 开启时,镜像的应答写回 PTY;
+// 附着客户端(浏览器自行应答)或 --answer-queries=false 时不写。
+func TestOutputPumpAnswersWhenUnattached(t *testing.T) {
+	mirror := &fakeMirror{answers: []byte("\x1b[0n")}
+	sess, stub := newMirrorSession(t, mirror)
+
+	stub.writer.Write([]byte("some output")) // 触发 pump
+	eventually(t, func() bool {
+		return strings.Contains(stub.writtenString(), "\x1b[0n")
+	})
+	// 应答也进了镜像(数据不因应答而丢)
+	eventually(t, func() bool {
+		snap, _ := sess.Screen()
+		return strings.Contains(snap.Text, "some output")
+	})
+}
+
+func TestOutputPumpDropsAnswersWhenDisabled(t *testing.T) {
+	mirror := &fakeMirror{answers: []byte("\x1b[0n")}
+	stub := newStubTerminal("mock")
+	sess := New("no-answer", stub, WithScreenMirror(mirror), withAnswerQueries(false))
+	t.Cleanup(func() { stub.Close() })
+	_ = sess
+
+	stub.writer.Write([]byte("some output"))
+	time.Sleep(100 * time.Millisecond)
+	if got := stub.writtenString(); strings.Contains(got, "\x1b[0n") {
+		t.Errorf("answers written back despite --answer-queries=false: %q", got)
+	}
+}
+
+func TestOutputPumpDropsAnswersWhenClientAttached(t *testing.T) {
+	mirror := &fakeMirror{answers: []byte("\x1b[0n")}
+	sess, stub := newMirrorSession(t, mirror)
+
+	// 附着客户端:浏览器端 xterm 会自己应答,双答会污染
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attachDone := make(chan error, 1)
+	go func() {
+		attachDone <- sess.Attach(ctx, &splitConn{reader: blockedReader{}, writer: io.Discard}, AttachOptions{})
+	}()
+	eventually(t, func() bool { return sess.State() == StateRunning })
+
+	stub.writer.Write([]byte("some output"))
+	time.Sleep(100 * time.Millisecond)
+	if got := stub.writtenString(); strings.Contains(got, "\x1b[0n") {
+		t.Errorf("answers written back while a client is attached: %q", got)
+	}
+	// 镜像仍然收数据
+	eventually(t, func() bool {
+		snap, _ := sess.Screen()
+		return strings.Contains(snap.Text, "some output")
+	})
+	cancel()
+}

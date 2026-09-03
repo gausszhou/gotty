@@ -1,7 +1,9 @@
 package capture
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 // helpers ----------------------------------------------------------------
@@ -160,8 +162,10 @@ func TestEraseDisplay(t *testing.T) {
 
 	e = NewEmulator(10, 3)
 	write(t, e, "aaa\r\nbbb\r\nccc")
-	write(t, e, "\x1b[2;1H\x1b[1J") // 向上全擦:行0 整行 + 行1 到光标(含光标格 col0)
-	assertText(t, e, "\n bb\nccc")
+	write(t, e, "\x1b[2;1H\x1b[1J")
+	// x/vt 的 ED1 会整行清除(含光标所在行);xterm 只清光标行到光标列,
+	// 这是底层仿真器的差异,以 x/vt(经 vttest)行为为基准。
+	assertText(t, e, "\n\nccc")
 
 	e = NewEmulator(10, 3)
 	write(t, e, "aaa\r\nbbb\r\nccc")
@@ -244,12 +248,13 @@ func TestSGRAttributes(t *testing.T) {
 }
 
 func TestSGRColonExtensionDegrades(t *testing.T) {
-	// 冒号扩展 4:3(下划线样式)不应把参数误读成 reset
+	// 冒号扩展 4:3(下划线:双线)被 x/vt 正确解析为下划线,而不会把
+	// 第二段的 3 误读为斜体(旧引擎的降级行为)。
 	e := NewEmulator(20, 2)
 	write(t, e, "\x1b[4:3mX")
 	c := e.Screen().Cell(0, 0)
-	if !c.Underline || !c.Italic {
-		t.Errorf("colon SGR degraded wrongly: %+v", c)
+	if !c.Underline || c.Italic {
+		t.Errorf("colon SGR 4:3 parsed wrongly: %+v", c)
 	}
 }
 
@@ -509,25 +514,44 @@ func TestResizeClearsAnswersAndImages(t *testing.T) {
 }
 
 // terminal query answers (DA/DSR/DECRQM) ----------------------------------
+//
+// 应答由底层 x/vt 仿真器生成(经内部 pw 管道泵入应答队列);DA1 应答
+// VT220 而非旧引擎的 VT102,内容以 x/vt 为准——程序只要求"有应答"。
+
+// waitAnswers 轮询直到 DrainAnswers 拿到应答(泵是异步的),最多 1s。
+func waitAnswers(t *testing.T, e *Emulator) string {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got := string(e.DrainAnswers()); got != "" {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no query answer within 1s")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 func TestAnswerDA1(t *testing.T) {
 	e := NewEmulator(20, 5)
 	write(t, e, "\x1b[c")
-	if got := string(e.DrainAnswers()); got != "\x1b[?1;2c" {
-		t.Errorf("DA1 answer = %q, want %q", got, "\x1b[?1;2c")
+	if got := waitAnswers(t, e); got != "\x1b[?62;1;6;22c" {
+		t.Errorf("DA1 answer = %q, want %q", got, "\x1b[?62;1;6;22c")
 	}
-	// vim 风格:private 前缀 + 参数,应答相同
-	write(t, e, "\x1b[?1;2c")
-	if got := string(e.DrainAnswers()); got != "\x1b[?1;2c" {
-		t.Errorf("DA1 (private) answer = %q, want %q", got, "\x1b[?1;2c")
+	// 带参数的 DA1(0 才算无参数,同 xterm):非 0 参数不应答
+	write(t, e, "\x1b[1c")
+	time.Sleep(20 * time.Millisecond)
+	if got := string(e.DrainAnswers()); got != "" {
+		t.Errorf("DA1 with param must not answer, got %q", got)
 	}
 }
 
 func TestAnswerDA2(t *testing.T) {
 	e := NewEmulator(20, 5)
 	write(t, e, "\x1b[>c")
-	if got := string(e.DrainAnswers()); got != "\x1b[>0;0;0c" {
-		t.Errorf("DA2 answer = %q, want %q", got, "\x1b[>0;0;0c")
+	if got := waitAnswers(t, e); got != "\x1b[>1;10;0c" {
+		t.Errorf("DA2 answer = %q, want %q", got, "\x1b[>1;10;0c")
 	}
 }
 
@@ -535,15 +559,15 @@ func TestAnswerDSR(t *testing.T) {
 	e := NewEmulator(20, 5)
 	write(t, e, "ab\r\n") // 光标 (1,0)
 	write(t, e, "\x1b[6n")
-	if got := string(e.DrainAnswers()); got != "\x1b[2;1R" {
+	if got := waitAnswers(t, e); got != "\x1b[2;1R" {
 		t.Errorf("DSR6 answer = %q, want %q", got, "\x1b[2;1R")
 	}
 	write(t, e, "\x1b[5n")
-	if got := string(e.DrainAnswers()); got != "\x1b[0n" {
-		t.Errorf("DSR5 answer = %q, want %q", got, "\x1b[0n")
+	if got := waitAnswers(t, e); got != "\x1b[?0n" {
+		t.Errorf("DSR5 answer = %q, want %q", got, "\x1b[?0n")
 	}
 	write(t, e, "\x1b[?6n") // DECXCPR
-	if got := string(e.DrainAnswers()); got != "\x1b[?2;1R" {
+	if got := waitAnswers(t, e); got != "\x1b[?2;1R" {
 		t.Errorf("DECXCPR answer = %q, want %q", got, "\x1b[?2;1R")
 	}
 }
@@ -551,33 +575,199 @@ func TestAnswerDSR(t *testing.T) {
 func TestAnswerDECRQM(t *testing.T) {
 	e := NewEmulator(20, 5)
 	write(t, e, "\x1b[?25$p") // 光标可见 → 1
-	if got := string(e.DrainAnswers()); got != "\x1b[?25;1$y" {
+	if got := waitAnswers(t, e); got != "\x1b[?25;1$y" {
 		t.Errorf("DECRQM ?25 = %q, want %q", got, "\x1b[?25;1$y")
 	}
 	write(t, e, "\x1b[?25l\x1b[?25$p") // 隐藏后 → 2
-	if got := string(e.DrainAnswers()); got != "\x1b[?25;2$y" {
+	if got := waitAnswers(t, e); got != "\x1b[?25;2$y" {
 		t.Errorf("DECRQM ?25 after hide = %q, want %q", got, "\x1b[?25;2$y")
 	}
 	write(t, e, "\x1b[?1049h\x1b[?1049$p") // 备用屏 → 1
-	if got := string(e.DrainAnswers()); got != "\x1b[?1049;1$y" {
+	if got := waitAnswers(t, e); got != "\x1b[?1049;1$y" {
 		t.Errorf("DECRQM ?1049 = %q, want %q", got, "\x1b[?1049;1$y")
 	}
 	write(t, e, "\x1b[?2026$p") // 未跟踪模式 → 0
-	if got := string(e.DrainAnswers()); got != "\x1b[?2026;0$y" {
+	if got := waitAnswers(t, e); got != "\x1b[?2026;0$y" {
 		t.Errorf("DECRQM unknown = %q, want %q", got, "\x1b[?2026;0$y")
+	}
+}
+
+func TestAnswerDECRQMModes(t *testing.T) {
+	// 非私有/私有模式按真实状态应答:IRM(4)、DECAWM(7)、LNM(20)
+	e := NewEmulator(20, 5)
+	write(t, e, "\x1b[?7$p") // DECAWM 默认开 → 1
+	if got := waitAnswers(t, e); got != "\x1b[?7;1$y" {
+		t.Errorf("DECRQM ?7 default = %q", got)
+	}
+	write(t, e, "\x1b[?7l\x1b[?7$p") // 关闭 → 2
+	if got := waitAnswers(t, e); got != "\x1b[?7;2$y" {
+		t.Errorf("DECRQM ?7 off = %q", got)
+	}
+	write(t, e, "\x1b[4h\x1b[4$p") // IRM 开 → 1
+	if got := waitAnswers(t, e); got != "\x1b[4;1$y" {
+		t.Errorf("DECRQM 4 set = %q", got)
+	}
+	write(t, e, "\x1b[20h\x1b[20$p") // LNM 开 → 1
+	if got := waitAnswers(t, e); got != "\x1b[20;1$y" {
+		t.Errorf("DECRQM 20 set = %q", got)
+	}
+}
+
+func TestAnswerOSCColorQueries(t *testing.T) {
+	// OSC 10;?/11;?/12;?(x/vt 原生应答,写回队列)
+	e := NewEmulator(20, 5)
+	write(t, e, "\x1b]10;?\x07")
+	if got := waitAnswers(t, e); !strings.HasPrefix(got, "\x1b]10;rgb:") {
+		t.Errorf("OSC10 query answer = %q", got)
+	}
+	write(t, e, "\x1b]11;?\x07")
+	if got := waitAnswers(t, e); !strings.HasPrefix(got, "\x1b]11;rgb:") {
+		t.Errorf("OSC11 query answer = %q", got)
+	}
+	write(t, e, "\x1b]12;?\x1b\\")
+	if got := waitAnswers(t, e); !strings.HasPrefix(got, "\x1b]12;rgb:") {
+		t.Errorf("OSC12 query answer = %q", got)
 	}
 }
 
 func TestAnswersBoundedAndDrainable(t *testing.T) {
 	e := NewEmulator(20, 5)
-	e.answersCap = 8
-	write(t, e, "\x1b[5n") // 4 字节应答
 	write(t, e, "\x1b[5n")
-	write(t, e, "\x1b[5n") // 第三条超出上限被丢弃
-	if got := string(e.DrainAnswers()); got != "\x1b[0n\x1b[0n" {
-		t.Errorf("capped answers = %q, want two DSR5 replies", got)
+	write(t, e, "\x1b[5n")
+	// 泵异步送达:DrainAnswers 自带等待,等两条都到再断言。
+	got1 := string(e.DrainAnswers())
+	got2 := string(e.DrainAnswers())
+	if got1+got2 != "\x1b[?0n\x1b[?0n" {
+		t.Errorf("answers = %q+%q, want two DSR5 replies", got1, got2)
 	}
 	if got := e.DrainAnswers(); len(got) != 0 {
-		t.Errorf("second drain = %q, want empty", got)
+		t.Errorf("later drain = %q, want empty", got)
 	}
+}
+
+func TestAnswersCapBounded(t *testing.T) {
+	// 超上限的应答被截断(旧引擎同款防查询风暴语义)
+	e := NewEmulator(20, 5)
+	e.answersCap = 6
+	write(t, e, "\x1b[5n") // \x1b[?0n = 5 字节,放得下
+	write(t, e, "\x1b[5n") // 第二条只剩 1 字节空间 → 截断
+	if got := string(e.DrainAnswers()); got != "\x1b[?0n\x1b" {
+		t.Errorf("capped answers = %q, want %q", got, "\x1b[?0n\x1b")
+	}
+}
+
+// 新增 CSI:ICH/DCH/ECH/REP(由 x/vt 原生实现,锁行为) ----------------
+
+func TestInsertDeleteEraseChars(t *testing.T) {
+	e := NewEmulator(10, 3)
+	write(t, e, "abcdef")
+	write(t, e, "\x1b[3D\x1b[3@") // ICH 3:光标处插 3 空,右侧被推出
+	assertText(t, e, "abc   def")
+	assertCursor(t, e, 0, 3)
+
+	write(t, e, "\x1b[3P") // DCH 3:删光标处 3 字符,尾部补空
+	assertText(t, e, "abcdef")
+	assertCursor(t, e, 0, 3)
+
+	write(t, e, "\x1b[2X") // ECH 2:擦除光标处 2 字符,不移动光标
+	assertText(t, e, "abc  f")
+	assertCursor(t, e, 0, 3)
+}
+
+func TestRepeatPreviousChar(t *testing.T) {
+	e := NewEmulator(10, 2)
+	write(t, e, "a\x1b[3b") // 重复 'a' 3 次
+	assertText(t, e, "aaaa")
+
+	// 无前序字符时 REP 为空操作
+	e = NewEmulator(10, 2)
+	write(t, e, "\x1b[5bX")
+	assertText(t, e, "X")
+
+	// 宽字符重复:按 2 格处理(x/vt 的 REP 只记录单宽字符,由包装层翻译)
+	e = NewEmulator(10, 2)
+	write(t, e, "中\x1b[2b") // 再复制 2 个 → 共 3 个
+	assertText(t, e, "中中中")
+	assertCursor(t, e, 0, 6)
+}
+
+func TestDECAWMOffOverwritesInPlace(t *testing.T) {
+	// DECAWM ?7l:行尾不再换行,原地覆盖
+	e := NewEmulator(5, 2)
+	write(t, e, "12345\x1b[1D\x1b[?7lX")
+	assertText(t, e, "123X5")
+	assertCursor(t, e, 0, 4)
+	write(t, e, "Y") // 仍停在最后一格覆盖
+	assertText(t, e, "123XY")
+	assertCursor(t, e, 0, 4)
+}
+
+func TestTabStopsAndTBC(t *testing.T) {
+	e := NewEmulator(20, 2)
+	write(t, e, "a\tb")
+	assertCursor(t, e, 0, 9) // 默认制表位 8
+
+	// 清除全部制表位后 TAB 走到行尾
+	e = NewEmulator(20, 2)
+	write(t, e, "\x1b[3g")
+	write(t, e, "a\tb")
+	assertText(t, e, "a"+strings.Repeat(" ", 18)+"b")
+	assertCursor(t, e, 0, 19)
+}
+
+func TestIRSInsertMode(t *testing.T) {
+	// IRM(CSI 4 h):后续字符前移插入,不覆盖(包装层注入 ICH 实现)
+	e := NewEmulator(10, 2)
+	write(t, e, "abc")
+	write(t, e, "\x1b[2D\x1b[4hXY")
+	assertText(t, e, "aXYbc") // X/Y 插入,b、c 前移
+	write(t, e, "\x1b[4lZ")   // 退出插入模式:Z 覆盖
+	assertText(t, e, "aXYZc")
+}
+
+func TestCSISaveRestoreCursorTranslated(t *testing.T) {
+	// x/vt 未实现 ANSI CSI s/u;包装层翻译为 DECSC/DECRC(ESC 7/8)
+	e := NewEmulator(10, 5)
+	write(t, e, "\x1b[3;4H\x1b[s\x1b[H\x1b[u")
+	assertCursor(t, e, 2, 3)
+	// DECSC/DECRC 原生路径也保持
+	e = NewEmulator(10, 5)
+	write(t, e, "\x1b[3;4H\x1b7\x1b[H\x1b8")
+	assertCursor(t, e, 2, 3)
+}
+
+func TestColorsMappedFromXVT(t *testing.T) {
+	e := NewEmulator(20, 2)
+	write(t, e, "\x1b[31mR\x1b[38;5;123mX\x1b[38;2;1;2;3mY")
+	grid := e.Screen()
+	if c := grid.Cell(0, 0); c.Fg.Mode != ColorIndex || c.Fg.Index != 1 {
+		t.Errorf("SGR31 fg = %+v, want index 1", c.Fg)
+	}
+	if c := grid.Cell(0, 1); c.Fg.Mode != ColorIndex || c.Fg.Index != 123 {
+		t.Errorf("SGR38;5 fg = %+v, want index 123", c.Fg)
+	}
+	if c := grid.Cell(0, 2); c.Fg.Mode != ColorRGB || c.Fg.RGB != 0x010203 {
+		t.Errorf("SGR38;2 fg = %+v, want RGB 0x010203", c.Fg)
+	}
+	// 属性映射
+	e = NewEmulator(20, 2)
+	write(t, e, "\x1b[1;4;7mZ")
+	c := e.Screen().Cell(0, 0)
+	if !c.Bold || !c.Underline || !c.Reverse {
+		t.Errorf("attrs = bold:%v underline:%v reverse:%v, want all true",
+			c.Bold, c.Underline, c.Reverse)
+	}
+}
+
+func TestLNM(t *testing.T) {
+	// 默认 LNM 关:LF 只下移不归位
+	e := NewEmulator(10, 3)
+	write(t, e, "ab\ndef") // def 在行1 第 3 列起
+	assertText(t, e, "ab\n  def")
+
+	// LNM(20h)开后 LF 隐含 CR(x/vt 与 xterm 一致)
+	e = NewEmulator(10, 3)
+	write(t, e, "\x1b[20h")
+	write(t, e, "ab\ndef")
+	assertText(t, e, "ab\ndef")
 }

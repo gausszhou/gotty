@@ -150,6 +150,13 @@ type Session struct {
 	mirror     ScreenMirror
 	mirrorVer  uint64    // bumped per output chunk (wait uses it for change detection)
 	mirrorLast time.Time // last chunk time (wait quiet detection)
+
+	// answerQueries gates the mirror's terminal-query answers: they are
+	// written back into the PTY only when it is set AND no browser client
+	// is attached (an attached xterm answers queries itself; double
+	// replies would corrupt the program state). Disabled with
+	// --answer-queries=false.
+	answerQueries bool
 }
 
 // ScreenMirror renders the PTY output stream into a screen grid for the
@@ -191,16 +198,26 @@ func WithScreenMirror(m ScreenMirror) SessionOption {
 	}
 }
 
+// withAnswerQueries enables answering terminal queries (DA/DSR/DECRQM/OSC
+// colors) from the mirror when no browser client is attached. It is wired
+// by the Manager from the --answer-queries flag (default on).
+func withAnswerQueries(enabled bool) SessionOption {
+	return func(s *Session) {
+		s.answerQueries = enabled
+	}
+}
+
 // New creates a Session wrapping an already-started terminal.
 func New(id string, term Terminal, opts ...SessionOption) *Session {
 	s := &Session{
-		id:          id,
-		term:        term,
-		createdAt:   time.Now(),
-		state:       StateIdle,
-		lastTouched: time.Now(),
-		out:         newRing(outputRingCapacity),
-		termExited:  make(chan struct{}),
+		id:            id,
+		term:          term,
+		createdAt:     time.Now(),
+		state:         StateIdle,
+		lastTouched:   time.Now(),
+		out:           newRing(outputRingCapacity),
+		termExited:    make(chan struct{}),
+		answerQueries: true, // 与 --answer-queries 默认一致;Manager 显式传值
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -628,6 +645,14 @@ func (s *Session) outputPump() {
 	buffer := make([]byte, 32*1024)
 	for {
 		n, err := s.term.Read(buffer)
+		// 先处理数据再处理错误:PTY 最后一次读可能同时返回数据与
+		// EOF(进程写最后一块输出后立即退出),若先走错误分支会把
+		// 这块输出丢掉——镜像里就少了最后几字节(agent wait 看不见
+		// 最终画面)。
+		if n > 0 {
+			// 数据处理的代码内联在下方,避免函数拆分影响可读性
+			s.pumpChunk(buffer[:n])
+		}
 		if err != nil {
 			select {
 			case <-s.termExited:
@@ -639,42 +664,50 @@ func (s *Session) outputPump() {
 		if n == 0 {
 			continue
 		}
+	}
+}
 
-		var deliverTo io.ReadWriter
-		s.outMu.Lock()
-		chunkStart := s.total
-		s.total += int64(n)
-		s.out.Write(buffer[:n])
-		if chunkStart >= s.replaySeq {
-			s.mu.Lock()
-			deliverTo = s.conn
-			s.mu.Unlock()
-		}
-		s.outMu.Unlock()
+// pumpChunk feeds one output chunk into the ring, mirror and client.
+func (s *Session) pumpChunk(chunk []byte) {
+	n := len(chunk)
+	var deliverTo io.ReadWriter
+	s.outMu.Lock()
+	chunkStart := s.total
+	s.total += int64(n)
+	s.out.Write(chunk)
+	if chunkStart >= s.replaySeq {
+		s.mu.Lock()
+		deliverTo = s.conn
+		s.mu.Unlock()
+	}
+	s.outMu.Unlock()
 
-		// 镜像仿真器:输出 tee 一份进屏幕网格(agent 读屏/等待的数据源)。
-		// 同时排空查询应答:无客户端附着时由我们应答(浏览器附着时 xterm
-		// 会自己应答,应答被丢弃避免双答)。
-		var answers []byte
-		s.mirrorMu.Lock()
-		if s.mirror != nil {
-			s.mirror.Write(buffer[:n])
-			s.mirrorVer++
-			s.mirrorLast = time.Now()
-			answers = s.mirror.DrainAnswers()
-		}
-		s.mirrorMu.Unlock()
-		if len(answers) > 0 && deliverTo == nil {
-			_, _ = s.term.Write(answers)
-		}
+	if len(chunk) == 0 {
+		return
+	}
 
-		if deliverTo == nil {
-			continue
-		}
-		if _, err := deliverTo.Write(terminal.EncodeOutput(buffer[:n])); err != nil {
-			// Client is gone; the next attach replays the ring tail.
-			continue
-		}
+	// 镜像仿真器:输出 tee 一份进屏幕网格(agent 读屏/等待的数据源)。
+	// 同时排空查询应答:无客户端附着时由我们应答(浏览器附着时 xterm
+	// 会自己应答,应答被丢弃避免双答)。--answer-queries=false 关闭应答。
+	var answers []byte
+	s.mirrorMu.Lock()
+	if s.mirror != nil {
+		s.mirror.Write(chunk)
+		s.mirrorVer++
+		s.mirrorLast = time.Now()
+		answers = s.mirror.DrainAnswers()
+	}
+	s.mirrorMu.Unlock()
+	if len(answers) > 0 && deliverTo == nil && s.answerQueries {
+		_, _ = s.term.Write(answers)
+	}
+
+	if deliverTo == nil {
+		return
+	}
+	if _, err := deliverTo.Write(terminal.EncodeOutput(chunk)); err != nil {
+		// Client is gone; the next attach replays the ring tail.
+		return
 	}
 }
 
