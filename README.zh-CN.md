@@ -22,7 +22,7 @@ GoTTY 是一个命令行工具,把你的 CLI 工具跑在**浏览器托管的终
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
-# 可选参数:sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
+# 可选参数:sh install.sh --version v0.0.2 --prefix ~/.local --repo owner/gotty
 ```
 
 升级到最新版(下载 → 校验 `sha256sums.txt` → 原子替换当前二进制;替换后

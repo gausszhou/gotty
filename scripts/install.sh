@@ -4,7 +4,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 #   # 指定版本 / 安装前缀 / 镜像仓库:
-#   #   sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
+#   #   sh install.sh --version v0.0.2 --prefix ~/.local --repo owner/gotty
 #
 # 流程:探测平台架构 → 取发布信息(latest 或 --version)→ 下载对应平台的
 # 压缩包(build 资产 gotty-{os}-{arch}.tar.gz)与 sha256sums.txt → 校验
@@ -24,7 +24,7 @@ usage() {
     sed -n '2,12p' "$0"
     echo
     echo "options:"
-    echo "  --version <tag>    Target version tag, e.g. v2.1.0 (default: latest release)"
+    echo "  --version <tag>    Target version tag, e.g. v0.0.2 (default: latest release)"
     echo "  --prefix <dir>     Install prefix (default: \$HOME/.local, binary at <prefix>/bin/gotty)"
     echo "  --repo <owner/name> GitHub repository to fetch from (default: gausszhou/gotty)"
 }

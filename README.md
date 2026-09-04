@@ -25,7 +25,7 @@ One-line install (Linux/macOS, amd64/arm64, no sudo — installs to
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
-# options: sh install.sh --version v2.1.0 --prefix ~/.local --repo owner/gotty
+# options: sh install.sh --version v0.0.2 --prefix ~/.local --repo owner/gotty
 ```
 
 Upgrade to the latest release (downloads, verifies `sha256sums.txt` and

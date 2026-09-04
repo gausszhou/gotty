@@ -35,7 +35,7 @@
 
 - 版本号改为 `git describe --tags` 派生:`VERSION ?= $(shell git describe
   --tags --always --dirty 2>/dev/null || echo 2.0.0)`;发布时打
-  `v2.1.0` 格式 tag,构建产物版本即 tag。
+  `v0.0.2` 格式 tag,构建产物版本即 tag。
 - `gotty -v` 输出保持 `Version+CommitID`;新增 `gotty version --json`
   (name/version/commit/go_version/os/arch),供自更新与排查用。
 
@@ -55,7 +55,7 @@
   ```sh
   curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
   # 或指定版本/前缀:
-  #   sh install.sh --version v2.1.0 --prefix ~/.local
+  #   sh install.sh --version v0.0.2 --prefix ~/.local
   ```
 - 流程:
   1. 探测平台/架构(`uname -s`/`uname -m`,映射 amd64/arm64、.exe);
@@ -123,7 +123,7 @@
 
 ## 3.5 发布清单(每次发版)
 
-1. `git tag v2.1.0` && `git push origin v2.1.0`;
+1. `git tag v0.0.2` && `git push origin v0.0.2`;
 2. CI(release.yml)在 tag 上构建 5 平台矩阵 + `sha256sums.txt`,上传资产,
    `git log` 自动生成发布说明;
 3. 校验:安装脚本回归 `cd build && sha256sum -c --ignore-missing sha256sums.txt`
@@ -137,7 +137,7 @@
   校验和失败中止、原子替换失败保留旧二进制(用临时目录模拟)。
 - 手工验收:
   1. 全新容器里 `curl install.sh | sh` 后 `gotty -v` 可用;
-  2. 本地装 2.0.0,`gotty self update --repo <fork> --version v2.1.0 --dry-run`
+  2. 本地装 2.0.0,`gotty self update --repo <fork> --version v0.0.2 --dry-run`
      显示版本差;实际更新后二进制替换成功、旧二进制不残留;
   3. 篡改下载内容 → 校验失败退出且不落盘;
   4. 二进制所在目录不可写 → 报错并提示 install.sh,进程仍可用。
