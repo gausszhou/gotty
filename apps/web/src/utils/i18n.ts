@@ -10,6 +10,7 @@ const messages: Record<Lang, Record<string, string>> = {
     zh: {
         'tab.new': '新建会话',
         'tab.destroy': '销毁会话',
+        'tab.dragHint': '拖拽调整顺序',
         'tab.latency': '往返延迟(RTT),每 2 秒刷新',
         'settings.open': '打开设置',
         'settings.close': '关闭',
@@ -35,6 +36,7 @@ const messages: Record<Lang, Record<string, string>> = {
     en: {
         'tab.new': 'New session',
         'tab.destroy': 'Destroy session',
+        'tab.dragHint': 'Drag to reorder',
         'tab.latency': 'Round-trip latency (RTT), refreshed every 2s',
         'settings.open': 'Open settings',
         'settings.close': 'Close',

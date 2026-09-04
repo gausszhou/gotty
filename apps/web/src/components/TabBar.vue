@@ -1,15 +1,25 @@
 <template>
-  <div class="tab-bar">
+  <div ref="barEl" class="tab-bar" @dragover="onBarDragOver" @drop.prevent="onDrop">
     <!-- 新建会话(固定在左侧) -->
     <div class="tab-actions tab-actions-left">
       <button class="icon-btn" :title="t('tab.new')" @click="create">＋</button>
     </div>
     <div
-      v-for="item in displayList"
+      v-for="(item, index) in displayList"
       :key="item.session.id"
       class="tab"
-      :class="{ active: item.session.id === activeSessionId }"
+      :data-session-id="item.session.id"
+      :class="[
+        { active: item.session.id === activeSessionId },
+        { dragging: dragId === item.session.id },
+        { 'drop-left': dropIndex === index },
+        { 'drop-right': dropIndex === index + 1 && dropIndex === displayList.length },
+      ]"
+      draggable="true"
+      :title="t('tab.dragHint')"
       @click="open(item)"
+      @dragstart="onDragStart($event, item.session.id)"
+      @dragend="onDragEnd"
     >
       <span class="state-dot" :class="stateClass(item.session)"></span>
       <span class="tab-title">{{ item.title }}</span>
@@ -36,9 +46,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
+import { loadTabOrder, saveTabOrder } from '../utils/tabOrder'
 import { t } from '../utils/i18n'
 import { logger } from '../utils/logger'
 
@@ -90,16 +101,116 @@ function displayTitle(entry: ManifestEntry | undefined, command: string): string
     return commandBasename(command)
 }
 
-// 页签 = 清单中存活的会话,按服务端 created_at 升序
+// 页签 = 清单中存活的会话;默认按服务端 created_at 升序,
+// 用户拖拽过的顺序(tab order,localStorage)优先生效,新会话追加在末尾。
+const tabOrder = ref<string[]>(loadTabOrder())
 const displayList = computed(() => {
     const alive = [...props.alive].sort((a, b) => (a.created_at > b.created_at ? 1 : -1))
-    return alive.map((session) => {
+    const known = alive
+        .filter((s) => tabOrder.value.includes(s.id))
+        .sort((a, b) => tabOrder.value.indexOf(a.id) - tabOrder.value.indexOf(b.id))
+    const unknown = alive.filter((s) => !tabOrder.value.includes(s.id))
+    return [...known, ...unknown].map((session) => {
         const entry = entryById.value.get(session.id)
         return { session, title: displayTitle(entry, session.command) }
     })
 })
 
+// ── 拖拽排序 ──
+// dragId:正在拖拽的会话 id;dropIndex:当前悬停插入位置(0..displayList.length)。
+// drag 结束后浏览器会在原处补发 click,用时间窗吞掉它,避免误切换页签。
+const dragId = ref<string | null>(null)
+const dropIndex = ref<number | null>(null)
+let suppressClickUntil = 0
+
+// 页签栏元素(dragover 冒泡到容器统一计算插入位,避免逐页签绑定)。
+const barEl = ref<HTMLElement | null>(null)
+
+function onDragStart(e: DragEvent, id: string) {
+    // 从关闭按钮发起的"拖动"不视为页签拖拽:取消本次 dragstart,
+    // 点击关闭仍走 click(已在关闭按钮上 @click.stop)。
+    if ((e.target as HTMLElement).closest('.tab-close')) {
+        e.preventDefault()
+        return
+    }
+    if (!e.dataTransfer) return
+    dragId.value = id
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox 要求 dragstart 中写入 data,否则不进入拖拽
+    e.dataTransfer.setData('text/plain', id)
+    logger.info('tab', 'drag start session=%s', id)
+}
+
+// 容器统一 dragover:计算鼠标所在的插入位(0..n),仅活动拖拽时响应
+function onBarDragOver(e: DragEvent) {
+    if (dragId.value === null || !e.dataTransfer) return
+    const target = e.target as HTMLElement
+    // 新建按钮/右侧操作区不参与拖拽落点
+    if (target.closest('.tab-actions')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const bar = barEl.value
+    const tabs = bar ? Array.from(bar.querySelectorAll('.tab')) : []
+    const x = e.clientX
+    let idx = tabs.length
+    for (let i = 0; i < tabs.length; i++) {
+        const rect = tabs[i].getBoundingClientRect()
+        if (x < rect.left) {
+            idx = i
+            break
+        }
+        if (x <= rect.right) {
+            idx = x < rect.left + rect.width / 2 ? i : i + 1
+            break
+        }
+    }
+    dropIndex.value = idx
+    // 边缘自动滚动:接近左右边界时滚动页签栏,露出更多页签
+    if (bar && x < bar.getBoundingClientRect().left + 20) {
+        bar.scrollLeft -= 12
+    } else if (bar && x > bar.getBoundingClientRect().right - 20) {
+        bar.scrollLeft += 12
+    }
+}
+
+// 落点:把拖拽会话移动到 dropIndex 处,持久化顺序
+function onDrop(e: DragEvent) {
+    e.preventDefault()
+    const id = dragId.value
+    const to = dropIndex.value
+    // drop 后浏览器会补发 click,时间窗内吞掉,避免误切换页签
+    suppressClickUntil = Date.now() + 350
+    if (id === null || to === null) return resetDrag()
+    const ids = displayList.value.map((d) => d.session.id)
+    const from = ids.indexOf(id)
+    if (from === -1 || from === to) return resetDrag() // 无效/原位放下,不变
+    const next = [...ids]
+    next.splice(from, 1)
+    next.splice(from < to ? to - 1 : to, 0, id)
+    tabOrder.value = next
+    saveTabOrder(next)
+    logger.info('tab', 'dragged session=%s %d -> %d, order=%s', id, from, to, next.join(','))
+    resetDrag()
+}
+
+function onDragEnd() {
+    // 拖拽取消/完成都清理状态;dragend 后同样可能补发 click
+    suppressClickUntil = Date.now() + 350
+    resetDrag()
+}
+
+function resetDrag() {
+    dragId.value = null
+    dropIndex.value = null
+}
+
+onBeforeUnmount(() => {
+    dragId.value = null
+    dropIndex.value = null
+})
+
 function open(item: { session: SessionInfo; title: string }) {
+    if (Date.now() < suppressClickUntil) return // 吞掉拖拽结束后的补发 click
     if (item.session.state === 'destroyed' || item.session.exited) return
     emit('open', { session: item.session, title: item.title })
 }
@@ -152,11 +263,26 @@ function stateClass(s: SessionInfo): string {
     border-right: 1px solid var(--bg-bar-border);
     color: var(--fg-dim);
     font-size: 13px;
-    cursor: pointer;
+    cursor: grab;
     white-space: nowrap;
     flex: 0 0 auto;
     background: var(--bg-tab);
     border-top: 1px solid var(--border-tab);
+}
+
+/* 拖拽中的页签:半透明 + 抓取指针 */
+.tab.dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+}
+
+/* ── 拖拽插入指示:在插入位置的页签边缘画一条 2px 强调线 ── */
+.tab.drop-left {
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tab.drop-right {
+    box-shadow: inset -2px 0 0 var(--accent);
 }
 
 .tab.active {

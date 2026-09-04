@@ -68,7 +68,8 @@ never exposes a global list. Reloading the page never creates a session —
 it reopens the most recent alive one, or shows the create card. Creating
 with a known id is idempotent / **resurrects** the recorded command
 (`run_count+1`); re-attaching the same id preempts the old client
-(WS 1013).
+(WS 1013). Tabs in the top bar can be **dragged to reorder** (order is
+persisted per device in `localStorage`); new sessions append at the end.
 
 ## `gotty capture` — end-to-end terminal testing
 
