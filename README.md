@@ -41,12 +41,15 @@ build or run pre-release code:
 ```sh
 make install   # frontend dependencies
 make build     # frontend + embedded static + ./build/gotty
-make release   # 5-platform matrix + sha256sums.txt into ./build/
+make release   # 5-platform matrix (binary + tar.gz/zip archive) + sha256sums.txt into ./build/
 ```
 
 Release assets are named `gotty-{os}-{arch}[.exe]` for
-`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`, each
-with a `sha256sums.txt`; `gotty version --json` reports
+`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`, each with
+a compressed archive (`gotty-{os}-{arch}.tar.gz`, Windows: `.zip`) for slow
+networks — `install.sh` downloads the archive and extracts it locally, and
+falls back to the raw binary when an older release has no archive. Every
+asset is covered by `sha256sums.txt`; `gotty version --json` reports
 name/version/commit/go_version/os/arch for support triage. The version
 string is derived from the git tag via `git describe --tags`.
 

@@ -96,8 +96,8 @@
 
 | 文件 | 改动 |
 |---|---|
-| `Makefile` | `VERSION` 改 `git describe --tags --always --dirty`;`PLATFORMS` 扩到 5 平台;windows 出 `.exe`;UPX 仅 linux(缺 upx 时跳过);release 末尾生成 `sha256sums.txt` |
-| `scripts/install.sh` | 新增(探测/取发布/下载/`sha256sum`/`shasum -a 256` 校验/安装到 `--prefix`,默认 `$HOME/.local/bin`,零 sudo;`--version`/`--prefix`/`--repo`/`GOTTY_UPDATE_URL`) |
+| `Makefile` | `VERSION` 改 `git describe --tags --always --dirty`;`PLATFORMS` 扩到 5 平台;windows 出 `.exe`;release 末尾生成 `sha256sums.txt`。**2026-09 追加**:每平台二进制额外产出压缩包(unix → `gotty-{os}-{arch}.tar.gz`,windows → `.zip`),**移除 UPX**(压缩包已足够缩小体积,且 UPX 有兼容性和内存开销问题);原始二进制与压缩包同时发布,`sha256sums.txt` 覆盖全部资产 |
+| `scripts/install.sh` | 新增(探测/取发布/下载/`sha256sum`/`shasum -a 256` 校验/安装到 `--prefix`,默认 `$HOME/.local/bin`,零 sudo;`--version`/`--prefix`/`--repo`/`GOTTY_UPDATE_URL`)。**2026-09 追加**:默认下载压缩包 `gotty-{os}-{arch}.tar.gz` 并在本地 `tar -xzf` 解压出二进制;老版本发布或自定义源无压缩包资产时自动回退下载原始二进制 |
 | `cmd/root.go` | 注册 `self update`、`version` |
 | `cmd/version.go` | 新增:`gotty version`(人类可读)`--json`(name/version/commit/go_version/os/arch) |
 | `cmd/selfupdate.go` | 新增:`--repo`/`--version`/`--yes`/`--dry-run`/`--check`;`GOTTY_UPDATE_URL` 覆盖索引地址 |

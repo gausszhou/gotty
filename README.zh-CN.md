@@ -38,12 +38,15 @@ gotty self update          # 或 --yes / --dry-run / --check
 ```sh
 make install   # 前端依赖
 make build     # 前端 + 内嵌静态资源 + ./build/gotty
-make release   # 5 平台矩阵 + sha256sums.txt 输出到 ./build/
+make release   # 5 平台矩阵(原始二进制 + tar.gz/zip 压缩包)+ sha256sums.txt 到 ./build/
 ```
 
 发布资产命名为 `gotty-{os}-{arch}[.exe]`,覆盖
-`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`,配套
-`sha256sums.txt`;`gotty version --json` 输出
+`linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`;每个二进制
+额外附一个压缩包(`gotty-{os}-{arch}.tar.gz`,Windows 为 `.zip`),针对
+GitHub 慢网络缩小下载体积——`install.sh` 下载压缩包并在本地解压,老版本
+发布没有压缩包时自动回退下载原始二进制。全部资产配套 `sha256sums.txt`;
+`gotty version --json` 输出
 name/version/commit/go_version/os/arch 便于排查。版本号由 git tag 经
 `git describe --tags` 派生(单一来源)。
 

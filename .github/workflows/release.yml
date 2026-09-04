@@ -37,16 +37,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install UPX
-        run: |
-          curl -fsSL https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-amd64_linux.tar.xz \
-            | sudo tar -xJ --strip-components=1 -C /usr/local/bin upx-4.2.4-amd64_linux/upx
-
       - name: Install dependencies
         run: make install
 
       - name: Build all platforms
-        # make release 产出 5 平台矩阵 + sha256sums.txt(UPX 仅 linux)
+        # make release 产出 5 平台矩阵的原始二进制 + 压缩包 + sha256sums.txt
         run: make release
 
       - name: Verify binary
@@ -68,4 +63,9 @@ jobs:
             build/gotty-darwin-amd64
             build/gotty-darwin-arm64
             build/gotty-windows-amd64.exe
+            build/gotty-linux-amd64.tar.gz
+            build/gotty-linux-arm64.tar.gz
+            build/gotty-darwin-amd64.tar.gz
+            build/gotty-darwin-arm64.tar.gz
+            build/gotty-windows-amd64.zip
             build/sha256sums.txt

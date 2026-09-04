@@ -3,10 +3,11 @@ GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null | cut -c1-7)
 # 版本单一来源:git describe --tags 派生(v2.1.0 格式 tag);非 git 环境兜底 2.0.0。
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 2.0.0)
 LDFLAGS    := -X github.com/gausszhou/gotty/cmd.Version=$(VERSION) -X github.com/gausszhou/gotty/cmd.CommitID=$(GIT_COMMIT)
-UPX        ?= upx
 
 # 构建矩阵:资产命名 gotty-{os}-{arch}[.exe],与 install.sh / self update 的
-# 映射保持一致;windows 输出 .exe;UPX 仅对 linux 执行(macOS 会破坏签名)。
+# 映射保持一致;windows 输出 .exe。每个平台额外产出压缩包:
+# unix → gotty-{os}-{arch}.tar.gz, windows → gotty-windows-amd64.zip
+# (原始二进制与压缩包同时发布;压缩包供 install.sh 与慢网络下载)。
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 # Default target: 单平台开发构建;多平台发布请显式执行 `make release`
@@ -32,9 +33,14 @@ release: frontend static
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
 			-ldflags "$(LDFLAGS) -s -w" \
 			-o $$out .; \
-		if [ "$$os" = "linux" ] && command -v $(UPX) >/dev/null 2>&1; then \
-			echo "Compressing with UPX..."; \
-			$(UPX) --best --lzma $$out; \
+		echo "Packing $$os/$$arch..."; \
+		if [ "$$os" = "windows" ]; then \
+			python3 -c "import sys, zipfile; z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[1], sys.argv[3]); z.close()" \
+				$(OUTPUT_DIR)/gotty-$$os-$$arch$$ext \
+				$(OUTPUT_DIR)/gotty-$$os-$$arch.zip \
+				gotty-$$os-$$arch$$ext; \
+		else \
+			tar -czf $(OUTPUT_DIR)/gotty-$$os-$$arch.tar.gz -C $(OUTPUT_DIR) gotty-$$os-$$arch; \
 		fi; \
 	done
 	@echo "Writing sha256sums.txt..."; \
