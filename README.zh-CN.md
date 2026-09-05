@@ -18,12 +18,38 @@ GoTTY 是一个命令行工具,把你的 CLI 工具跑在**浏览器托管的终
 
 # 安装
 
-一键安装(Linux/macOS,amd64/arm64,不需要 sudo,默认装到 `~/.local/bin`):
+一键安装(Linux/macOS 以及 Windows 的 Git Bash,amd64/arm64,不需要 sudo;
+安装到 `~/.local/bin`,并幂等地把该目录加入 `~/.bashrc`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 # 可选参数:sh install.sh --version v0.0.2 --prefix ~/.local --repo owner/gotty
 ```
+
+脚本自动解析最新版本,下载对应平台的压缩包(`.tar.gz`,Windows/Git Bash
+为 `.zip`),按 `sha256sums.txt` 校验后解压安装到 `~/.local/bin`;随后仅当
+`~/.bashrc` 中还没有该 PATH 条目时才追加写入(重复执行安装不会产生重复
+条目)。安装完成后执行 `source ~/.bashrc`(或新开一个终端)即可生效。
+
+原生 Windows(cmd/PowerShell)——运行 PowerShell 安装脚本(PowerShell
+5.1+ / 7,无需管理员):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+# 可选参数:-Version v0.0.2 / -Prefix $HOME\.local / -Repo owner/gotty
+```
+
+或直接远程执行:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.ps1 | iex"
+```
+
+流程与 install.sh 对齐:解析发布 → 下载 `gotty-windows-{arch}.zip`(没有
+压缩包时回退原始 `.exe`)→ sha256 校验 → 安装到 `%USERPROFILE%\.local\bin`,
+并幂等地把该目录加入 **User PATH**(原生 Windows 对 `~/.bashrc` 修改的
+等价物,cmd / PowerShell / Git Bash 全部继承生效)。完成后新开一个终端
+即可使用。
 
 升级到最新版(下载 → 校验 `sha256sums.txt` → 原子替换当前二进制;替换后
 需重启服务生效):

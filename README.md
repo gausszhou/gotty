@@ -20,13 +20,42 @@ Playwright-style.
 
 # Installation
 
-One-line install (Linux/macOS, amd64/arm64, no sudo — installs to
-`~/.local/bin`):
+One-line install (Linux/macOS and Git Bash on Windows, amd64/arm64, no sudo —
+installs to `~/.local/bin` and idempotently adds it to `~/.bashrc` if
+missing):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh
 # options: sh install.sh --version v0.0.2 --prefix ~/.local --repo owner/gotty
 ```
+
+The script resolves the latest release, downloads the platform archive
+(`.tar.gz`, or `.zip` on Windows/Git Bash), verifies it against
+`sha256sums.txt` and extracts the binary into `~/.local/bin`. It then appends
+the PATH export to `~/.bashrc` only when that exact line is not there yet
+(re-running the installer is a no-op). Finish with `source ~/.bashrc` or open
+a new terminal.
+
+Native Windows (cmd/PowerShell) — run the PowerShell installer (PowerShell
+5.1+ / 7, no admin required):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+# options: -Version v0.0.2 / -Prefix $HOME\.local / -Repo owner/gotty
+```
+
+or fetch it directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.ps1 | iex"
+```
+
+It follows the same flow — resolves the release, downloads
+`gotty-windows-{arch}.zip` (falling back to the raw `.exe`), verifies the
+sha256, installs into `%USERPROFILE%\.local\bin` — and idempotently adds that
+directory to your **User PATH** (the native-Windows equivalent of the
+`~/.bashrc` edit; cmd, PowerShell and Git Bash all inherit it). Open a new
+terminal afterwards.
 
 Upgrade to the latest release (downloads, verifies `sha256sums.txt` and
 atomically swaps the binary in place — restart the service afterwards):
