@@ -10,6 +10,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { ImageAddon } from '@xterm/addon-image'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import { onThemeChange } from '../utils/theme'
 import { useXTermClipboard, loadClipboardAddon } from '../utils/clipboard'
@@ -96,13 +97,38 @@ onMounted(() => {
     fontSize,
     fontFamily,
     theme: terminalTheme(),
+    // 提案 API 总开关。Unicode11Addon 的 activate() 第一件事就是读
+    // terminal.unicode,而该 getter 带 _checkProposedApi 守卫,未开启时抛
+    // "You must set the allowProposedApi option to true to use proposed API"。
+    // 关键点:xterm 6 的 AddonManager.loadAddon 是直接 `addon.activate(term)`,
+    // **不再 try/catch**(5.x 会吞掉异常只打日志)——异常会一路冒到 Vue 的
+    // mounted 钩子,整个 onMounted 中断,终端连 DOM 都不会建(xterm 6 实测:
+    // .terminal-container 空、--term-cell-w 停在 1ch)。
+    // 图形协议图片(addon-image)同样依赖提案 API,故统一打开。
+    allowProposedApi: true,
   })
 
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
+  // Unicode 11 宽度表:对齐 VSCode 集成终端(xterm 内置表是 Unicode 6,对
+  // emoji / CJK 的占位列数判断偏旧)。addon 只负责 register,真正生效要显式
+  // 设置 activeVersion;必须在 term.open() 之后设 —— 该 setter 会触发字符
+  // 尺寸重测,而重测依赖已经建好的 DOM(见下方 open 之后的赋值)。
+  term.loadAddon(new Unicode11Addon())
   // OSC 52:终端内程序(vim/tmux/ssh)读写浏览器系统剪贴板
   loadClipboardAddon(term)
+
+  term.open(terminalEl.value!)
+
+  // ⚠️ 下面两个"可能失败"的 addon 必须在 open() **之后** load —— xterm 6 起,
+  // open() 之前 loadAddon 的 addon 会被推迟到 open() 内部(终端 onOpen 事件)
+  // 才 activate,而 AddonManager 已经不再 try/catch 包住 activate(5.x 会吞掉
+  // 只打 console.error)。此时抛出的异常会冲出 term.open(),写在 loadAddon
+  // 外面的 try/catch 拦不住,onMounted 当场中断:后面的 unicode 版本设置、
+  // 剪贴板快捷键、标题上报、resize 监听、主题订阅全部被静默跳过(实测 headless
+  // 无 WebGL 环境:报 "WebGL2 not supported",终端能显示却丢了一堆能力)。
+  // 放到 open() 之后是立即 activate,异常正好落进下面的 try/catch。
 
   // 图形协议图片(kitty / sixel / iTerm2 inline):chafa/img2sixel 等
   // 输出在终端里显示为真实图片(WebGL 渲染器下以 overlay 层覆盖)。
@@ -115,8 +141,8 @@ onMounted(() => {
     console.error('image addon failed to load', e)
   }
 
-  // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时
-  // loadAddon 会抛错,自动回退到 xterm 内置的 DOM 渲染器。
+  // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时抛错,
+  // 自动回退到 xterm 内置的 DOM 渲染器。
   if (!props.domRenderer) {
     try {
       term.loadAddon(new WebglAddon())
@@ -125,7 +151,9 @@ onMounted(() => {
     }
   }
 
-  term.open(terminalEl.value!)
+  // 启用 Unicode 11 宽度表(见上方 loadAddon 处的说明)。放这里是因为该
+  // setter 会触发字符尺寸重测,而重测要求 DOM 已经由 open() 建好。
+  term.unicode.activeVersion = '11'
 
   // 复制/粘贴快捷键(Ctrl+Shift+C/V、Ctrl+C 选区复制、Ctrl+V 粘贴)
   useXTermClipboard(term)
