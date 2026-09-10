@@ -34,9 +34,13 @@
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [`index.md`](feat/index.md) | 优化改动索引(含实施顺序建议) | — |
-| [`0001-agent-driving-api.md`](feat/0001-agent-driving-api.md) | Agent 可驱动 API:读屏 / 等待 / 输入注入 | 待实施 |
-| [`0002-native-emulator-completeness.md`](feat/0002-native-emulator-completeness.md) | native 仿真器完整度:查询应答与缺失 CSI 对齐 | 待实施 |
-| [`0003-distribution-self-update.md`](feat/0003-distribution-self-update.md) | 分发与自更新:install.sh + gotty self update | 待实施 |
+| [`0001-agent-driving-api.md`](feat/0001-agent-driving-api.md) | Agent 可驱动 API:读屏 / 等待 / 输入注入 | 已实施 |
+| [`0002-native-emulator-completeness.md`](feat/0002-native-emulator-completeness.md) | native 仿真器完整度:查询应答与缺失 CSI 对齐 | 已实施(路线 A) |
+| [`0003-distribution-self-update.md`](feat/0003-distribution-self-update.md) | 分发与自更新:install.sh + gotty self update | 已实施 |
+| [`0004-agent-input-parity.md`](feat/0004-agent-input-parity.md) | 输入侧对齐:鼠标驱动 / 键名层 / 粘贴 + agent CLI 面 | 待实施 |
+| [`0005-observation-and-config.md`](feat/0005-observation-and-config.md) | 观察侧与配置面补齐:scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述 | 待实施 |
+| [`0006-ui-token-and-component-spec.md`](feat/0006-ui-token-and-component-spec.md) | UI Token 与组件规格:颜色 / 尺寸 / 控件收敛(对齐 VSCode Dark/Light Modern) | 已实施 |
+| [`0007-theme-and-language-preference.md`](feat/0007-theme-and-language-preference.md) | 主题与语言偏好:都支持「跟随系统」且默认跟随 | 已实施 |
 
 ### 修复记录 — `docs/fix/`
 
