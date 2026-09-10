@@ -40,13 +40,16 @@
         class="icon-btn"
         :title="t('settings.open')"
         @click="emit('settings')"
-      >⚙</button>
+      >
+        <Settings :size="15" />
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, onBeforeUnmount } from 'vue'
+import { Settings } from 'lucide-vue-next'
 import { destroySession, type SessionInfo } from '../utils/api'
 import { removeFromManifest, type ManifestEntry } from '../utils/manifest'
 import { loadTabOrder, saveTabOrder } from '../utils/tabOrder'
@@ -396,15 +399,23 @@ function stateClass(s: SessionInfo): string {
     z-index: 2;
 }
 
+/* 工具按钮:设置入口改用 lucide 图标(原来是一个 "⚙" 文本字符 —— 字形与笔画
+   随字体走,在部分字体里又细又小,和旁边的延迟徽标同为灰色时很难被发现)。
+   按钮几何与悬停反馈对齐 gossh 页签栏的工具按钮。 */
 .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
     background: none;
     border: none;
     color: var(--fg); /* icon.foreground */
-    font-size: var(--icon-size);
+    font-size: var(--font-size-sm);
     cursor: pointer;
-    padding: 2px 8px;
     line-height: 1;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
 }
 
 .icon-btn:hover {
