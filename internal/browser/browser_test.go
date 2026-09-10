@@ -14,6 +14,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,14 +50,33 @@ func testPNGBytes(t *testing.T, w, h int, c color.RGBA) []byte {
 }
 
 // findChrome locates a usable Chrome/Chromium binary for the browser engine.
+//
+// Windows 之前完全没覆盖:候选只有 POSIX 路径,于是 `make test-browser` 在
+// Windows 上永远走 SKIP(表现为"测试通过",实际一次都没跑过浏览器引擎)。
+// 这里按环境变量拼 Windows 的安装位置,并把 Edge(同为 Chromium 内核,
+// chromedp 直接可用)作为没有 Chrome 时的兜底。
 func findChrome() string {
-	for _, p := range []string{
+	candidates := []string{
 		"/usr/bin/google-chrome",
 		"/usr/bin/google-chrome-stable",
 		"/usr/bin/chromium",
 		"/usr/bin/chromium-browser",
 		"/opt/google/chrome/chrome",
+	}
+	for _, dir := range []string{
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+		os.Getenv("LOCALAPPDATA"),
 	} {
+		if dir == "" {
+			continue
+		}
+		candidates = append(candidates,
+			filepath.Join(dir, `Google\Chrome\Application\chrome.exe`),
+			filepath.Join(dir, `Microsoft\Edge\Application\msedge.exe`),
+		)
+	}
+	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -71,9 +91,10 @@ func TestBrowserEngineText(t *testing.T) {
 	}
 	base := newBrowserTestServer(t)
 
+	cmd, args := shellCmd(shellStep{write: "browser engine works"})
 	res, err := RunBrowser(base, BrowserOptions{
-		Command:     "/bin/sh",
-		Args:        []string{"-c", "printf 'browser engine works'"},
+		Command:     cmd,
+		Args:        args,
 		Cols:        60,
 		Rows:        15,
 		WaitMs:      100,
@@ -122,9 +143,10 @@ func TestBrowserEngineIIPImage(t *testing.T) {
 	seq := fmt.Sprintf("\033]1337;File=name=%s;size=%d;inline=1:%s\007",
 		name, len(raw), base64.StdEncoding.EncodeToString(raw))
 
+	cmd, args := shellCmd(shellStep{write: seq})
 	res, err := RunBrowser(base, BrowserOptions{
-		Command:     "/bin/sh",
-		Args:        []string{"-c", fmt.Sprintf("printf '%s'", seq)},
+		Command:     cmd,
+		Args:        args,
 		Cols:        40,
 		Rows:        10,
 		WaitMs:      200,
@@ -152,9 +174,10 @@ func TestBrowserEngineMarker(t *testing.T) {
 	}
 	base := newBrowserTestServer(t)
 
+	cmd, args := shellCmd(shellStep{write: "quick marker"}, shellStep{sleep: 2 * time.Second})
 	res, err := RunBrowser(base, BrowserOptions{
-		Command:     "/bin/sh",
-		Args:        []string{"-c", "printf 'quick marker'; sleep 2"},
+		Command:     cmd,
+		Args:        args,
 		Cols:        40,
 		Rows:        10,
 		Marker:      "marker",
@@ -179,11 +202,17 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 
 	// 命令必须存活到页面附着之后:慢速 CI 上 Chrome 冷启动可达数秒,
 	// 若命令先退出,exit 判定会先于 quiet 触发,测试就变成环境敏感的。
-	// `sleep 10` 给出远超任何合理启动时间的窗口;quiet 在收到 'a' 后
-	// 静默 150ms 即触发(0.4s lull 内),远早于 10s 后的 'b'/退出。
+	// 10s 的尾部等待给出远超任何合理启动时间的窗口;quiet 在收到 'b' 后
+	// 静默 150ms 即触发(0.4s lull 内),远早于 10s 后的退出。
+	cmd, args := shellCmd(
+		shellStep{write: "a"},
+		shellStep{sleep: 400 * time.Millisecond},
+		shellStep{write: "b"},
+		shellStep{sleep: 10 * time.Second},
+	)
 	res, err := RunBrowser(base, BrowserOptions{
-		Command:     "/bin/sh",
-		Args:        []string{"-c", "printf 'a'; sleep 0.4; printf 'b'; sleep 10"},
+		Command:     cmd,
+		Args:        args,
 		Cols:        40,
 		Rows:        10,
 		WaitMs:      150,
