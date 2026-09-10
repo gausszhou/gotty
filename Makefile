@@ -4,6 +4,16 @@ GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null | cut -c1-7)
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 2.0.0)
 LDFLAGS    := -X github.com/gausszhou/gotty/cmd.Version=$(VERSION) -X github.com/gausszhou/gotty/cmd.CommitID=$(GIT_COMMIT)
 
+# 本地构建产物在 Windows 上带 .exe:与 scripts/build-install.ps1 的
+# build\gotty.exe 以及发布资产 gotty-windows-amd64.exe 保持一致。
+# 不带扩展名时 Windows 上会同时存在 build\gotty 与 build\gotty.exe 两个名字
+# 相近的文件,极易启动到过期的那个(实测踩过:启动了修复前的旧二进制,
+# 症状是建会话一律 500 `unsupported`)。CI 在 ubuntu 上 OS != Windows_NT,
+# EXT 为空,行为不变。
+ifeq ($(OS),Windows_NT)
+EXT := .exe
+endif
+
 # 构建矩阵:资产命名 gotty-{os}-{arch}[.exe],与 install.sh / self update 的
 # 映射保持一致;windows 输出 .exe。每个平台额外产出压缩包:
 # unix → gotty-{os}-{arch}.tar.gz, windows → gotty-windows-amd64.zip
@@ -19,7 +29,7 @@ all: frontend static release
 
 build: frontend static
 	@mkdir -p $(OUTPUT_DIR)
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS) -s -w" -o $(OUTPUT_DIR)/gotty .
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS) -s -w" -o $(OUTPUT_DIR)/gotty$(EXT) .
 
 release: frontend static
 	@mkdir -p $(OUTPUT_DIR)

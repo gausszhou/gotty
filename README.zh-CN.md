@@ -67,6 +67,18 @@ make build     # 前端 + 内嵌静态资源 + ./build/gotty
 make release   # 5 平台矩阵(原始二进制 + tar.gz/zip 压缩包)+ sha256sums.txt 到 ./build/
 ```
 
+Windows 上有一条命令跑完整条本地链路:自动定位 Go 工具链(PATH → 标准安装
+目录 → 各盘符)、仅当前端源码比内嵌产物新才重建前端、构建、安装到
+`%USERPROFILE%\.local\bin`(与 `install.ps1`、`gotty self update` 同一位置)
+并自检。不需要 `make`、Git Bash,也不要求 `go` 在 PATH 里;服务正在运行时也能
+安装(先把被锁住的旧二进制改名让位):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-install.ps1
+# 可选参数:-Serve(装完直接起服务并打开浏览器)/ -RebuildFrontend / -SkipFrontend
+#          -Prefix <dir> / -GoExe <path> / -NoPathConfig
+```
+
 发布资产命名为 `gotty-{os}-{arch}[.exe]`,覆盖
 `linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`;每个二进制
 额外附一个压缩包(`gotty-{os}-{arch}.tar.gz`,Windows 为 `.zip`),针对

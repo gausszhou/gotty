@@ -73,6 +73,20 @@ make build     # frontend + embedded static + ./build/gotty
 make release   # 5-platform matrix (binary + tar.gz/zip archive) + sha256sums.txt into ./build/
 ```
 
+On Windows one command covers the whole local loop — it locates the Go
+toolchain (PATH, standard install directories, any drive), rebuilds the
+frontend only when its sources are newer than the embedded bundle, builds,
+installs into `%USERPROFILE%\.local\bin` (the same place `install.ps1` and
+`gotty self update` use) and self-checks the result. No `make`, Git Bash or
+`go` on PATH required, and it also works while a server is running (the locked
+binary is renamed aside first):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-install.ps1
+# options: -Serve (start + open browser) / -RebuildFrontend / -SkipFrontend
+#          -Prefix <dir> / -GoExe <path> / -NoPathConfig
+```
+
 Release assets are named `gotty-{os}-{arch}[.exe]` for
 `linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64`, each with
 a compressed archive (`gotty-{os}-{arch}.tar.gz`, Windows: `.zip`) for slow
