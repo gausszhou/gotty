@@ -97,6 +97,17 @@ onMounted(() => {
     fontSize,
     fontFamily,
     theme: terminalTheme(),
+    // xterm 6 的"右侧滚动条槽"宽度由这个选项决定(默认 14px),它是网格右侧
+    // 那条空白的唯一来源:
+    //   · addon-fit 0.11 用同一数值扣可用宽度:
+    //       cols = floor((父容器宽 - 内边距 - (overviewRuler?.width || 14)) / 格宽)
+    //   · 滚动条自身宽度也取自它(xterm.js 6 的 _getChangeOptions:
+    //       verticalScrollbarSize = rawOptions.overviewRuler?.width || 14)
+    // 所以收窄它 = 同时收窄预留与滚动条,两边始终一致(不会出现滚动条压住
+    // 最后一列)。默认 14px 在网格右侧留出 14px 槽 + floor 取整余量;全屏 TUI
+    // (opencode/btop 自绘底色)与主题底色不同,看上去就是"右侧空白"。
+    // 注意不能写 0:xterm 里是 `|| 14`,0 是假值会退回 14。
+    overviewRuler: { width: 1 },
     // 提案 API 总开关。Unicode11Addon 的 activate() 第一件事就是读
     // terminal.unicode,而该 getter 带 _checkProposedApi 守卫,未开启时抛
     // "You must set the allowProposedApi option to true to use proposed API"。

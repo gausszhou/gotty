@@ -241,8 +241,26 @@ textarea:focus-visible {
     background-color: var(--bg-terminal);
 }
 
-/* 覆盖 xterm.css 默认 overflow-y: scroll —— 无滚动内容时不显示滚动条,
-   有内容溢出时才出现(滚动功能不受影响) */
+/* xterm 6 起这条已不影响布局 —— 保留成与 xterm.css 默认值一致只是为了不引入
+   分叉,下面这段来龙去脉别再重新推导。
+
+   【xterm 5 时代】网格右侧空白 26.16px 的根因:FitAddon 每轮 fit 都扣掉
+   `viewport.scrollBarWidth`,而它只在 Viewport 构造时测一次、且 0 会命中兜底:
+       scrollBarWidth = viewport.offsetWidth - scrollArea.offsetWidth || 15
+   term.open() 时终端还没有输出,auto 下没有滚动条 → 差值 0 → 冻死成 15px;
+   而实际滚动条只有下面定义的 10px,白扣的 5px 加上 floor 取整余量就成了右侧
+   那条空白(全屏 TUI 自绘底色时肉眼明显)。当时的修法是把这里写成 scroll,
+   让构造时就能测到真实的 10px。
+
+   【xterm 6.0.0 起】整套滚动条换成了 VS Code 的 scrollable element(#5096),
+   `scrollBarWidth` 与 `.xterm-scroll-area` 都已不存在;FitAddon 0.11 改为扣
+       options.overviewRuler?.width || 14      ← 常量,与 CSS / 原生滚动条无关
+   所以这条 overflow-y 在 xterm 6 下怎么写都不影响留白(实测 auto / scroll /
+   隐藏原生滚动条三种写法:网格都是 127 列 978px、留白都是 18.16px)。
+   真正要动的是 Terminal.vue 的 overviewRuler.width(该值同时决定预留宽度与
+   滚动条自身宽度)+ TerminalPane.vue 的 padding-right:0 —— 现在是 129 列、
+   留白 3.16px。原生滚动条在 xterm 6 已不承载回滚(铺满内容后 viewport 也不
+   溢出、不绘制),不会出现双滚动条。 */
 .xterm .xterm-viewport {
-    overflow-y: auto;
+    overflow-y: scroll;
 }

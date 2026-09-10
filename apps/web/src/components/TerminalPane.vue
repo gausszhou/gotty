@@ -223,6 +223,13 @@ onBeforeUnmount(() => {
     font-family: var(--font-mono);
     font-size: var(--term-font-size);
     padding: calc(var(--term-cell-w) / 2);
+    /* 右侧不留内边距:网格右边本来就是 xterm 6 的滚动条槽(见 Terminal.vue 的
+       overviewRuler 说明),再叠半个字符,全屏 TUI 自绘底色时就是一条明显的
+       空白。去掉后右边只剩"取整余量 + 1px 滚动条槽"(实测 1000px 窗口:
+       留白 18.6px → 3.2px),与左边 3.85px 视觉上基本对称。
+       注意只去右边:去掉左边会让网格贴住页签栏边缘,那是上面这条内边距
+       本来要解决的问题。 */
+    padding-right: 0;
 }
 
 .pane-terminal {
