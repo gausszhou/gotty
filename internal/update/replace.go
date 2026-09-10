@@ -7,11 +7,19 @@ import (
 )
 
 // AtomicReplace writes data to a temp file in target's directory, fsyncs
-// it, then renames it over target. Same directory ⇒ same filesystem ⇒ the
-// rename is atomic, so a crash mid-update never leaves a truncated binary.
+// it, then swaps it into place over target. Same directory ⇒ same filesystem ⇒
+// the swap is atomic, so a crash mid-update never leaves a truncated binary.
 // The old binary survives if anything fails (temp cleanup included).
+//
+// The swap itself is platform-specific (see replaceFile). It matters because
+// `gotty self update` replaces the binary it is *currently running from*: unix
+// can rename over a running executable, Windows cannot.
 func AtomicReplace(target string, data []byte) error {
 	dir := filepath.Dir(target)
+	// 上一次更新若在 Windows 上让位过一个运行中的旧 exe,它会留在这里;
+	// 那个进程已经退出的话,现在正好回收。
+	reapStaleBinaries(dir)
+
 	tmp, err := os.CreateTemp(dir, ".gotty-update-*")
 	if err != nil {
 		return fmt.Errorf("create temp in %s: %w", dir, err)
@@ -40,8 +48,9 @@ func AtomicReplace(target string, data []byte) error {
 		return fmt.Errorf("stat %s: %w", target, err)
 	}
 
-	if err := os.Rename(tmpName, target); err != nil {
-		// Windows 上运行中的 exe 不可被 rename;错误路径保留旧二进制。
+	if err := replaceFile(tmpName, target); err != nil {
+		// Windows 上运行中的 exe 不能被覆盖;replaceFile 会先让位再安装,
+		// 回滚也由它负责 —— 走到这里说明旧二进制仍在原位。
 		return fmt.Errorf("replace %s: %w (the old binary was left intact)", target, err)
 	}
 	return nil

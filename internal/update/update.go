@@ -177,14 +177,12 @@ func Run(ctx context.Context, client *http.Client, opts Options, env Env) (Resul
 	}
 
 	if err := AtomicReplace(exe, bin); err != nil {
-		msg := "the update was verified but could not be installed — run the install script " +
-			"(curl -fsSL https://raw.githubusercontent.com/gausszhou/gotty/master/scripts/install.sh | sh) " +
-			"or write to " + exe + " yourself: " + err.Error()
+		msg := "the update was verified but could not be installed — run the install script (" +
+			installScriptHint + ") or write to " + exe + " yourself: " + err.Error()
 		return Result{}, errors.New(msg)
 	}
 
-	fmt.Fprintf(out, "updated to %s at %s — restart the service (systemd/systemctl --user restart gotty) to take effect.\n",
-		target, exe)
+	fmt.Fprintf(out, "updated to %s at %s — %s.\n", target, exe, restartHint)
 	return Result{
 		Outcome: OutcomeUpdated, CurrentVersion: current, TargetVersion: target,
 		Changelog: rel.Body, AssetName: asset.Name, AssetSize: asset.Size,

@@ -150,13 +150,8 @@ func TestAtomicReplaceSuccess(t *testing.T) {
 	if string(got) != "new binary" {
 		t.Errorf("target content = %q, want %q", got, "new binary")
 	}
-	fi, err := os.Stat(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o755 {
-		t.Errorf("mode = %v, want 0755 (old binary's mode preserved)", fi.Mode().Perm())
-	}
+	// 权限保留只对 unix 有意义(Windows 上 Go 报 0666,且 Chmod 只切只读属性),
+	// 断言在 update_unix_test.go 的 TestAtomicReplacePreservesMode。
 	// 无残留临时文件
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -174,28 +169,15 @@ func TestAtomicReplaceKeepsOldOnFailure(t *testing.T) {
 	if err := AtomicReplace(filepath.Join(dir, "missing", "gotty"), []byte("x")); err == nil {
 		t.Fatal("replace into non-existent directory must fail")
 	}
-
-	// 目标存在、目录不可写(非 root 下 CreateTemp 即失败)→ 旧二进制原样保留。
-	targetDir := filepath.Join(dir, "ro")
-	if err := os.Mkdir(targetDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(targetDir, "gotty")
-	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(targetDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(targetDir, 0o755)
-	if err := AtomicReplace(target, []byte("new")); err == nil {
-		t.Fatal("replace into read-only directory must fail")
-	}
-	got, err := os.ReadFile(target)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "old" {
-		t.Errorf("old binary not preserved: %q", got)
+	if len(entries) != 0 {
+		t.Errorf("dir entries = %d, want 0 (no temp leftovers): %v", len(entries), entries)
 	}
+
+	// "目标存在、目录不可写 → 必须失败且旧二进制原样保留" 依赖 POSIX 权限语义
+	// (os.Chmod 对目录在 Windows 上无效,造不出只读目录),见 update_unix_test.go
+	// 的 TestAtomicReplaceFailsOnReadOnlyDir。
 }
