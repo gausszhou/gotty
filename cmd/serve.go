@@ -126,13 +126,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		defaultCommand = args[0]
 		defaultArgs = args[1:]
-	} else if shell := os.Getenv("SHELL"); shell != "" {
-		// 无命令时回退到登录 shell,保证页面打开即有可用会话
-		log.Printf("No command given, using the login shell: %s", shell)
-		defaultCommand = shell
 	} else {
-		log.Printf("No command given and $SHELL is unset, using: /bin/sh")
-		defaultCommand = "/bin/sh"
+		// 无命令时回退到登录 shell,保证页面打开即有可用会话
+		// (平台差异见 fallbackShell:$SHELL / COMSPEC / /bin/sh)。
+		defaultCommand = fallbackShell()
+		log.Printf("No command given, using the fallback shell: %s", defaultCommand)
 	}
 	appOptions.TitleVariables = map[string]interface{}{
 		"command":  defaultCommand,

@@ -1,32 +1,40 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package terminal
 
 import (
+	"fmt"
 	"os"
-	"os/exec"
 	"syscall"
-
-	"github.com/creack/pty"
 )
 
-// rawSlave is a no-op on platforms without POSIX termios (Windows): the
-// capture query-answer path is Linux/macOS territory anyway.
-func rawSlave(_ *os.File) error { return nil }
+// This file covers the platforms that have neither termios (unix) nor
+// ConPTY (Windows), i.e. everything creack/pty itself cannot drive. gotty
+// does not support them: they build, and starting a session fails with a
+// clear error instead of a puzzling one from the PTY library.
+//
+// Windows used to live here as well and wrongly assumed that creack/pty
+// falls back to a ConPTY backend — it does not (its start_windows.go returns
+// ErrUnsupported), so every session failed there. Windows now has a real
+// implementation in process_windows.go.
 
-// startRawPTY falls back to the plain pty.Start paths on non-unix
-// platforms: Windows has no termios, and creack/pty's Windows backend
-// (conpty) manages the console itself.
-func startRawPTY(cmd *exec.Cmd, size pty.Winsize) (*os.File, error) {
-	if size.Cols > 0 && size.Rows > 0 {
-		return pty.StartWithSize(cmd, &size)
-	}
-	return pty.Start(cmd)
+// startProcess has no PTY to offer on these platforms.
+func startProcess(
+	_ string,
+	_, _ []string,
+	_ string,
+	_, _ uint16,
+	_ bool,
+) (ptyProcess, error) {
+	return nil, fmt.Errorf("PTYs are not supported on this platform")
 }
 
-// signalProcessGroup on Windows degrades to a plain process signal, then
-// a kill: there is no process-group signal, and the graceful-close
-// escalation loop in Close() covers the rest.
+// rawSlave is a no-op without POSIX termios.
+func rawSlave(_ *os.File) error { return nil }
+
+// signalProcessGroup degrades to a plain process signal, then a kill: there
+// is no process group to address, and the graceful-close escalation loop in
+// Close() covers the rest.
 func signalProcessGroup(proc *os.Process, sig syscall.Signal) error {
 	if err := proc.Signal(sig); err == nil {
 		return nil

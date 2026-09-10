@@ -1,10 +1,8 @@
 package terminal
 
 import (
-	"bytes"
 	"strings"
 	"testing"
-	"time"
 )
 
 // envValue returns the value of key in the composed environment, or "".
@@ -83,63 +81,76 @@ func TestBuildEnvKeepsExtras(t *testing.T) {
 	}
 }
 
-// TestTerminal_ResetSequenceOnPrompt 验证 bash 会话通过 PROMPT_COMMAND
-// 在每个提示符前发送终端模式复位序列:鼠标模式
-// (?1000l/?1002l/?1003l/?1006l)、显示光标(25h)、关闭括号粘贴(?2004l),
-// 防止 TUI 退出/被杀后残留画面、鼠标字节乱码与隐藏光标。
-//
-// 注意:不发送 ?1049l(离开备用屏)——bash 从不会进入备用屏,该序列会被
-// xterm.js 当作"切回主屏并恢复光标"处理,把光标拽到已保存位置,导致
-// 新提示符画在历史输出行上(ls 后"提示符+文件行"拼接错乱)。
-//
-// 注意:清理只关闭 PTY 不强等进程回收(go test 环境对 bash 的
-// SIGHUP→Wait 回收有异常;生产路径(独立进程)已验证正常)。
-func TestTerminal_ResetSequenceOnPrompt(t *testing.T) {
-	term, err := New("bash", nil)
-	if err != nil {
-		t.Fatalf("failed to start bash: %s", err)
+// TestIsBash 覆盖各平台下 bash 的写法。Windows 那条是本轮修的缺陷:
+// 默认命令是 $SHELL,在 Windows 上是 `D:\...\Git\usr\bin\bash.exe`
+// (反斜杠),原先只测 "/bash.exe" 后缀 → 匹配失败 → PROMPT_COMMAND 注入
+// 被整段静默跳过。
+func TestIsBash(t *testing.T) {
+	yes := []string{
+		"bash",
+		"bash.exe",
+		"BASH.EXE",
+		"/bin/bash",
+		"/usr/local/bin/bash",
+		`D:\Program Files (x86)\Git\usr\bin\bash.exe`,
+		`C:\Program Files\Git\bin\bash.exe`,
 	}
-	t.Cleanup(func() {
-		_ = term.pty.Close()
-		if term.cmd.Process != nil {
-			_ = term.cmd.Process.Kill()
+	for _, command := range yes {
+		if !isBash(command) {
+			t.Errorf("isBash(%q) = false, want true", command)
 		}
-	})
-
-	got := collectOutput(term, 5*time.Second)
-	reset := "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?2004l"
-	if !bytes.Contains(got, []byte(reset)) {
-		t.Fatalf("prompt reset sequence not found in bash output: %q",
-			truncate(got, 300))
 	}
-	if bytes.Contains(got, []byte("\x1b[?1049l")) {
-		t.Fatalf("prompt reset must NOT leave the alternate screen: %q",
-			truncate(got, 300))
+	no := []string{
+		"sh",
+		"/bin/sh",
+		"zsh",
+		"bashful",
+		"/bin/bash-5.2",
+		`C:\Windows\System32\cmd.exe`,
+		"",
+	}
+	for _, command := range no {
+		if isBash(command) {
+			t.Errorf("isBash(%q) = true, want false", command)
+		}
 	}
 }
 
-// collectOutput reads the PTY until the reset sequence appears or the
-// deadline expires.
-func collectOutput(term *Terminal, timeout time.Duration) []byte {
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 1024)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		n, err := term.Read(tmp)
-		if err != nil {
-			break
+// TestBuildEnvBashPromptCommand 验证 bash 会话注入的 PROMPT_COMMAND
+// 既去掉 Git Bash 提示符开头的空行,又保留终端模式复位序列;
+// 且非 bash 不注入、用户显式设置时不覆盖。
+func TestBuildEnvBashPromptCommand(t *testing.T) {
+	for _, command := range []string{"/bin/bash", `D:\Program Files (x86)\Git\usr\bin\bash.exe`} {
+		got := envValue(t, buildEnv(command, nil), "PROMPT_COMMAND")
+		if got == "" {
+			t.Fatalf("PROMPT_COMMAND not injected for %q", command)
 		}
-		buf = append(buf, tmp[:n]...)
-		if bytes.Contains(buf, []byte("\x1b[?1000l")) {
-			break
+		// 去空行的部分:守卫 + 去掉首个换行转义。
+		if !strings.Contains(got, "$PS1") || !strings.Contains(got, `\007\]\n`) {
+			t.Errorf("PROMPT_COMMAND for %q lacks the guarded newline strip: %q", command, got)
+		}
+		if !strings.Contains(got, "${PS1/") {
+			t.Errorf("PROMPT_COMMAND for %q does not strip PS1: %q", command, got)
+		}
+		// 终端模式复位序列必须还在。
+		for _, seq := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?25h", "?2004l"} {
+			if !strings.Contains(got, seq) {
+				t.Errorf("PROMPT_COMMAND for %q lost the %s reset", command, seq)
+			}
+		}
+		// 不得包含 ?1049l(会把光标拽回陈旧位置,见 buildEnv 注释)。
+		if strings.Contains(got, "1049l") {
+			t.Errorf("PROMPT_COMMAND for %q must not leave the alternate screen", command)
 		}
 	}
-	return buf
-}
 
-func truncate(b []byte, n int) []byte {
-	if len(b) > n {
-		return b[:n]
+	if envHas(t, buildEnv("/bin/sh", nil), "PROMPT_COMMAND") {
+		t.Error("PROMPT_COMMAND must not be injected for non-bash commands")
 	}
-	return b
+
+	// 用户显式设置时以用户为准(既不覆盖,也不追加我们的复位序列)。
+	env := buildEnv("/bin/bash", []string{"PROMPT_COMMAND=echo mine"})
+	if got := envValue(t, env, "PROMPT_COMMAND"); got != "echo mine" {
+		t.Errorf("PROMPT_COMMAND = %q, want the user's value", got)
+	}
 }
