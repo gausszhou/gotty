@@ -34,6 +34,7 @@ func TestServeSubcommandRegistered(t *testing.T) {
 		"title-format", "reconnect", "reconnect-time",
 		"max-session", "timeout", "width", "height",
 		"ws-origin", "term", "tls", "tls-crt", "tls-key",
+		"log-file", "log-max-size", "log-max-backups",
 		"close-signal", "close-timeout",
 	} {
 		if serve.Flags().Lookup(name) == nil {

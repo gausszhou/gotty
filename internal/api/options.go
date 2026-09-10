@@ -39,6 +39,14 @@ type Options struct {
 	// Empty means console only.
 	LogFile string `json:"log_file" flagName:"log-file" flagDescribe:"Server log file path (empty = console only, default: ~/.gotty/logs/gotty.log)" default:"~/.gotty/logs/gotty.log"`
 
+	// LogMaxSizeMiB is the size cap of a single log file in MiB: reaching it
+	// rotates the file (gotty.log → gotty.log.1 → …). 0 disables rotation,
+	// which means the log grows without bound.
+	LogMaxSizeMiB int `json:"log_max_size_mib" flagName:"log-max-size" flagDescribe:"Rotate the server log after this many MiB (0 disables rotation)" default:"10"`
+	// LogMaxBackups is how many rotated files to keep (gotty.log.1 …
+	// gotty.log.N); the oldest one is dropped on each rotation.
+	LogMaxBackups int `json:"log_max_backups" flagName:"log-max-backups" flagDescribe:"Number of rotated log files to keep (oldest is dropped, 0 disables rotation)" default:"3"`
+
 	Width    int    `json:"width" flagName:"width" flagDescribe:"Static width of the screen, 0(default) means dynamically resize" default:"0"`
 	Height   int    `json:"height" flagName:"height" flagDescribe:"Static height of the screen, 0(default) means dynamically resize" default:"0"`
 	WSOrigin string `json:"ws_origin" flagName:"ws-origin" flagDescribe:"A regular expression that matches origin URLs to be accepted by WebSocket" default:""`

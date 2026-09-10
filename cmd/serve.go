@@ -23,7 +23,12 @@ import (
 
 // setupLogFile writes the server log to path (append mode) in addition
 // to the console. Empty path keeps the console-only behavior.
-func setupLogFile(path string) error {
+//
+// 落盘时按大小轮转(maxSizeMiB / maxBackups,见 api.Options):日志是纯追加的,
+// 不轮转就会无限增长 —— 客户端每 2s 一次的状态心跳曾经是主要来源(现已不打
+// 访问日志,见 api.accessLogSkipped),但会话创建/销毁、WS 连接、错误等仍然
+// 会持续累积。maxSizeMiB <= 0 或 maxBackups <= 0 表示关闭轮转。
+func setupLogFile(path string, maxSizeMiB, maxBackups int) error {
 	if path == "" {
 		return nil
 	}
@@ -32,13 +37,18 @@ func setupLogFile(path string) error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create log directory `%s`: %w", filepath.Dir(logPath), err)
 	}
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	writer, err := utils.NewRotatingWriter(logPath, int64(maxSizeMiB)<<20, maxBackups)
 	if err != nil {
 		return fmt.Errorf("failed to open log file `%s`: %w", logPath, err)
 	}
 
-	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	log.SetOutput(io.MultiWriter(os.Stderr, writer))
 	log.Printf("Server log file: %s", logPath)
+	if maxSizeMiB > 0 && maxBackups > 0 {
+		log.Printf("Server log rotates at %d MiB, keeping %d rotated files", maxSizeMiB, maxBackups)
+	} else {
+		log.Printf("Server log rotation is disabled (it will grow without bound)")
+	}
 	return nil
 }
 
@@ -114,9 +124,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	config.ApplyFlags(cmd, mappings, appOptions, terminalOptions)
 
-	// 服务端日志落盘(默认 ~/.gotty/logs/gotty.log,文件 + 控制台双写)
+	// 服务端日志落盘(默认 ~/.gotty/logs/gotty.log,文件 + 控制台双写,
+	// 按大小轮转)
 	// 必须在任何日志输出之前初始化
-	if err := setupLogFile(appOptions.LogFile); err != nil {
+	if err := setupLogFile(appOptions.LogFile, appOptions.LogMaxSizeMiB, appOptions.LogMaxBackups); err != nil {
 		return err
 	}
 

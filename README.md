@@ -181,6 +181,8 @@ shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-d
     --tls-crt string        TLS/SSL certificate file path (default: "~/.gotty.crt") [$GOTTY_TLS_CRT]
     --tls-key string        TLS/SSL key file path (default: "~/.gotty.key") [$GOTTY_TLS_KEY]
     --log-file string       Server log file path (default: "~/.gotty/logs/gotty.log", empty = console only) [$GOTTY_LOG_FILE]
+    --log-max-size int      Rotate the server log after this many MiB (default: 10, 0 disables rotation) [$GOTTY_LOG_MAX_SIZE]
+    --log-max-backups int   Number of rotated log files to keep (default: 3, oldest is dropped on rotation) [$GOTTY_LOG_MAX_BACKUPS]
     --close-signal int      Signal sent to the command process when the session is closed (default: 1 = SIGHUP) [$GOTTY_CLOSE_SIGNAL]
     --close-timeout int     Time in seconds to force kill process after the session is closed (default: 3, -1 = wait forever) [$GOTTY_CLOSE_TIMEOUT]
     --config string         Config file path (default: "~/.gotty/config.json") [$GOTTY_CONFIG]
