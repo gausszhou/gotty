@@ -11,7 +11,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { ImageAddon } from '@xterm/addon-image'
 import '@xterm/xterm/css/xterm.css'
-import { currentTheme, onThemeChange, type Theme } from '../utils/theme'
+import { onThemeChange } from '../utils/theme'
 import { useXTermClipboard, loadClipboardAddon } from '../utils/clipboard'
 
 const props = defineProps<{
@@ -26,10 +26,13 @@ const emit = defineEmits<{
     (e: 'title', title: string): void
 }>()
 
-// VSCode 集成终端默认字体(platform monospace)的跨平台栈:
-// macOS → Menlo/Monaco,Windows → Consolas,Linux → DejaVu Sans Mono。
-const FONT_FAMILY =
+// 终端字体(等宽栈)与字号的单一真源是 index.css 的 --font-mono / --term-font-size:
+// 终端面的"半字符内边距"取 --term-cell-w(xterm 的真实格子宽)的一半,而格子宽
+// 由字体字号决定,只有这里与那边一致,留白才正好是半个字符。下面的常量仅是
+// 变量缺失时的兜底。
+const FONT_FAMILY_FALLBACK =
     'Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Courier New", monospace'
+const FONT_SIZE_FALLBACK = 14
 
 const terminalEl = ref<HTMLElement>()
 let term: XTerminal
@@ -37,33 +40,62 @@ let fitAddon: FitAddon
 let resizeHandler: () => void
 let unsubscribeTheme: (() => void) | null = null
 
-// 终端内部配色跟随亮/暗主题(与页面 CSS 变量一致)
-function terminalTheme(theme: Theme): Record<string, string> {
-    if (theme === 'light') {
-        return {
-            background: '#ffffff',
-            foreground: '#1a1a1a',
-            cursor: '#1a1a1a',
-            cursorAccent: '#ffffff',
-            selectionBackground: '#cfe3f7',
-            selectionForeground: '#1a1a1a',
-        }
-    }
+// 终端内部配色来自 CSS 变量的单一真源(index.css 的 --bg-terminal/--term-*)。
+// 之前这里另写一套 hex,与 CSS 各存一份,改动只落一边就会出现
+// "CSS 改了、终端没改"(见 docs/feat/0006 §3.6)。
+//
+// 读取时机是安全的:applyTheme 先写 <html data-theme> 再广播主题变化
+// (utils/theme.ts 的 applyTheme),且 main.ts 在 mount 之前就应用了主题,
+// 所以这里读到的 computed 值一定是当前主题的。
+function cssVar(name: string, fallback: string): string {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    return v || fallback
+}
+
+function terminalTheme(): Record<string, string> {
     return {
-        background: '#000000',
-        foreground: '#cccccc',
-        cursor: '#cccccc',
-        cursorAccent: '#000000',
-        selectionBackground: '#333333',
+        // 兜底值与 index.css 的暗色值一致:变量缺失时至少不是非法颜色
+        background: cssVar('--bg-terminal', '#1f1f1f'),
+        foreground: cssVar('--term-fg', '#cccccc'),
+        cursor: cssVar('--term-cursor', '#cccccc'),
+        cursorAccent: cssVar('--term-cursor-accent', '#1f1f1f'),
+        selectionBackground: cssVar('--term-selection-bg', '#264f78'),
+        // 故意不设 selectionForeground:VSCode 的 terminal.selectionForeground 默认是
+        // null(含义为"保留原字形颜色"),xterm 缺省时同样是保留 → 语义一致。
+        //
+        // ANSI 16 色:不设的话 xterm 用自己的内置调色板,ls --color / git status / vim
+        // 的配色会和 VSCode 集成终端明显不同。取值来自 VSCode 的
+        // terminalColorRegistry.ts(见 index.css 的 --term-ansi-*)。
+        black: cssVar('--term-ansi-black', '#000000'),
+        red: cssVar('--term-ansi-red', '#cd3131'),
+        green: cssVar('--term-ansi-green', '#0dbc79'),
+        yellow: cssVar('--term-ansi-yellow', '#e5e510'),
+        blue: cssVar('--term-ansi-blue', '#2472c8'),
+        magenta: cssVar('--term-ansi-magenta', '#bc3fbc'),
+        cyan: cssVar('--term-ansi-cyan', '#11a8cd'),
+        white: cssVar('--term-ansi-white', '#e5e5e5'),
+        brightBlack: cssVar('--term-ansi-bright-black', '#666666'),
+        brightRed: cssVar('--term-ansi-bright-red', '#f14c4c'),
+        brightGreen: cssVar('--term-ansi-bright-green', '#23d18b'),
+        brightYellow: cssVar('--term-ansi-bright-yellow', '#f5f543'),
+        brightBlue: cssVar('--term-ansi-bright-blue', '#3b8eea'),
+        brightMagenta: cssVar('--term-ansi-bright-magenta', '#d670d6'),
+        brightCyan: cssVar('--term-ansi-bright-cyan', '#29b8db'),
+        brightWhite: cssVar('--term-ansi-bright-white', '#e5e5e5'),
     }
 }
 
 onMounted(() => {
+  // 字体/字号在挂载时从 CSS 变量读取(此时样式已应用,index.css 由 main.ts 导入)。
+  const fontFamily = cssVar('--font-mono', FONT_FAMILY_FALLBACK)
+  const fontFamilyParsed = Number.parseFloat(cssVar('--term-font-size', String(FONT_SIZE_FALLBACK)))
+  const fontSize = Number.isFinite(fontFamilyParsed) ? fontFamilyParsed : FONT_SIZE_FALLBACK
+
   term = new XTerminal({
     cursorBlink: true,
-    fontSize: 14,
-    fontFamily: FONT_FAMILY,
-    theme: terminalTheme(currentTheme()),
+    fontSize,
+    fontFamily,
+    theme: terminalTheme(),
   })
 
   fitAddon = new FitAddon()
@@ -105,7 +137,7 @@ onMounted(() => {
 
   // xterm.css 的 .terminal 规则自带默认等宽字体;显式覆盖到元素上,
   // 保证 WebGL 与 DOM 两种渲染路径都使用配置的字体栈。
-  ;(term.element as HTMLElement).style.fontFamily = FONT_FAMILY
+  ;(term.element as HTMLElement).style.fontFamily = fontFamily
 
   resizeHandler = () => {
     fit()
@@ -117,8 +149,8 @@ onMounted(() => {
   })
 
   // 跟随亮/暗主题,动态切换 xterm 内部的配色(纯渲染层;不向 PTY 同步)
-  unsubscribeTheme = onThemeChange((theme) => {
-    term.options.theme = terminalTheme(theme)
+  unsubscribeTheme = onThemeChange(() => {
+    term.options.theme = terminalTheme()
   })
 })
 
@@ -136,6 +168,24 @@ function fit() {
   const el = terminalEl.value
   if (!el || el.clientWidth === 0 || el.clientHeight === 0) return
   fitAddon?.fit()
+  publishCellWidth()
+}
+
+// publishCellWidth 把 xterm 实际使用的字符格宽写进 --term-cell-w,供终端面的
+// "半字符内边距"使用(见 TerminalPane.vue)。
+//
+// 为什么不能直接用 CSS 的 0.5ch:ch 是字体 "0" 的步进宽度,而 xterm 内部把格子
+// 宽度取整了 —— 实测 1ch = 7.70px 而真实格子 = 7.00px,差约 10%,用 0.5ch 会得到
+// 0.55 个字符格而不是半个。所以这里直接取 xterm 的真实几何:
+// 格子宽 = .xterm-screen 的宽度 / 列数(两者都是公开 DOM/API)。
+// 格子宽度只由字体与字号决定,与容器尺寸无关,所以每次 fit 后重算是幂等的。
+function publishCellWidth() {
+  const screenEl = terminalEl.value?.querySelector('.xterm-screen') as HTMLElement | null
+  if (!screenEl || !term || term.cols <= 0) return
+  const width = screenEl.getBoundingClientRect().width / term.cols
+  if (width > 0) {
+    document.documentElement.style.setProperty('--term-cell-w', width + 'px')
+  }
 }
 
 function info() {

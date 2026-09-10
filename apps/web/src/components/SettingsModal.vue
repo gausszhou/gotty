@@ -171,10 +171,10 @@ async function saveTitle() {
 .settings-dialog {
     width: 320px;
     max-width: calc(100vw - 32px);
-    background: var(--bg-dialog);
-    border: 1px solid var(--border-dialog);
-    border-radius: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    background: var(--bg-dialog);      /* editorWidget.background */
+    border: 1px solid var(--border-dialog); /* widget.border */
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-overlay); /* widget.shadow */
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -185,7 +185,7 @@ async function saveTitle() {
     align-items: center;
     justify-content: space-between;
     padding: 12px 14px;
-    border-bottom: 1px solid var(--border-tab);
+    border-bottom: 1px solid var(--border-dialog);
 }
 
 .settings-title {
@@ -200,16 +200,16 @@ async function saveTitle() {
 .settings-close {
     background: none;
     border: none;
-    color: var(--fg-dim);
-    font-size: 13px;
+    color: var(--fg-2);
+    font-size: var(--font-size-md);
     line-height: 1;
     padding: 3px 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
 }
 
 .settings-close:hover {
-    background: var(--bg-tab-hover);
+    background: var(--hover-toolbar); /* toolbar.hoverBackground */
     color: var(--fg-bright);
 }
 
@@ -221,53 +221,55 @@ async function saveTitle() {
 }
 
 .settings-label {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     /* 固定行高:避免中英文切换时行盒高度不同(同 .settings-title) */
     line-height: 1.4;
-    color: var(--fg-muted);
+    color: var(--fg-3);
     margin-bottom: 8px;
 }
 
 /* ── 分段选项(当前项高亮) ── */
 .settings-options {
     display: flex;
-    gap: 8px;
+    gap: var(--gap-md);
 }
 
 .option-btn {
     flex: 1 1 0;
     padding: 6px 0;
-    background: var(--bg-tab);
-    border: 1px solid var(--border-tab);
-    border-radius: 4px;
-    color: var(--fg-dim);
-    font-size: 13px;
+    background: var(--bg-btn-secondary); /* button.secondaryBackground */
+    border: 1px solid var(--border-btn); /* button.border */
+    border-radius: var(--radius-md);
+    color: var(--fg);                    /* button.secondaryForeground */
+    font-size: var(--font-size-md);
     font-family: inherit;
     cursor: pointer;
     line-height: 1.4;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    transition: background-color var(--transition-fast) linear,
+        border-color var(--transition-fast) linear;
 }
 
 .option-btn:hover {
-    background: var(--bg-tab-hover);
+    background: var(--bg-btn-secondary-hover); /* button.secondaryHoverBackground */
     color: var(--fg-bright);
 }
 
 .option-btn.active {
-    background: var(--bg-tab-active);
-    border-color: var(--accent);
-    color: var(--fg-bright);
+    background: var(--bg-selected); /* list.activeSelectionBackground */
+    border-color: var(--accent);    /* focusBorder */
+    color: var(--fg-selected);      /* list.activeSelectionForeground */
 }
 
 .option-btn:disabled {
-    opacity: 0.6;
+    /* VSCode 用 disabledForeground 表示禁用,而不是整体降透明度 */
+    color: var(--fg-disabled);
     cursor: default;
 }
 
 /* ── 页面标题:输入框 + 保存 ── */
 .title-row {
     display: flex;
-    gap: 8px;
+    gap: var(--gap-md);
 }
 
 .title-input {
@@ -275,19 +277,22 @@ async function saveTitle() {
     min-width: 0;
     height: 30px;
     padding: 0 8px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-tab);
-    border-radius: 4px;
-    color: var(--fg);
-    font-size: 13px;
+    background: var(--bg-input);        /* input.background */
+    border: 1px solid var(--border-input); /* input.border */
+    border-radius: var(--radius-md);
+    color: var(--fg);                   /* input.foreground */
+    font-size: var(--font-size-md);
     font-family: inherit;
     line-height: 1.4;
+    transition: border-color var(--transition-fast) linear;
 }
 
 .title-input::placeholder {
-    color: var(--fg-hint);
+    color: var(--fg-placeholder); /* input.placeholderForeground */
 }
 
+/* 焦点用边框表示(VSCode 的输入框就是 focusBorder 描边),
+   所以这里显式去掉外环——去掉之后仍有可见的焦点指示。 */
 .title-input:focus {
     outline: none;
     border-color: var(--accent);
@@ -300,7 +305,7 @@ async function saveTitle() {
 }
 
 .title-status {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     /* 固定行高:避免中英文切换时弹窗高度/位置跳动 */
     line-height: 1.4;
     margin-top: 6px;

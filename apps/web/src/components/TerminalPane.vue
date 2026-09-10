@@ -209,8 +209,20 @@ onBeforeUnmount(() => {
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: #000000;
+    background: var(--bg-terminal); /* 与内容区同色;此前硬编码 #000000 */
     overflow: hidden;
+    /* 半个字符的内边距:字符网格不再贴着页签栏与窗口边缘。
+       用的是 --term-cell-w —— Terminal.vue 用 xterm 的真实几何写回的格子宽,
+       所以这里正好是半个字符格。**不要**写成 0.5ch:ch 量的是字体 "0" 的步进宽度,
+       与 xterm 取整后的格子宽差约 10%(实测 7.70px vs 7.00px),会变成 0.55 个格子。
+       下面那行 font-family/font-size 只是 --term-cell-w 还没写回时的首帧兜底。
+       内边距区域由上面的 background 补齐,与终端面同色,所以看上去是"留白"而非"边框"。
+       fit() 的安全性:FitAddon 量的是 .xterm 父元素(Terminal.vue 的
+       .terminal-container)的 computed 尺寸,而百分比宽高按父元素 content box 解析、
+       box-sizing 又是 border-box,因此这里的 padding 会被自动扣掉。 */
+    font-family: var(--font-mono);
+    font-size: var(--term-font-size);
+    padding: calc(var(--term-cell-w) / 2);
 }
 
 .pane-terminal {
@@ -227,29 +239,31 @@ onBeforeUnmount(() => {
     justify-content: center;
     background: var(--overlay);
     z-index: 10;
+    /* 上面的等宽字体只是为了让 0.5ch 量得准,不该传染给弹窗文字 */
+    font-family: var(--font-ui);
 }
 
 .vsc-dialog {
     min-width: 320px;
     max-width: 420px;
     padding: 16px;
-    background: var(--bg-dialog); /* VSCode 对话框背景 */
-    border: 1px solid var(--border-dialog);
-    border-radius: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    background: var(--bg-dialog); /* VSCode 对话框背景 editorWidget.background */
+    border: 1px solid var(--border-dialog); /* widget.border */
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-overlay); /* widget.shadow */
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--gap-lg);
 }
 
 .dialog-title {
-    font-size: 15px;
+    font-size: var(--font-size-lg);
     font-weight: 600;
     color: var(--fg-bright);
 }
 
 .dialog-message {
-    font-size: 13px;
+    font-size: var(--font-size-md);
     color: var(--fg);
     line-height: 1.5;
     word-break: break-word;
@@ -258,39 +272,39 @@ onBeforeUnmount(() => {
 .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--gap-md);
     margin-top: 4px;
 }
 
 .btn-primary {
     height: 26px;
     padding: 0 14px;
-    background: var(--accent); /* VSCode 主按钮 */
+    background: var(--accent); /* button.background */
     border: none;
-    border-radius: 3px;
-    color: var(--fg-bright);
-    font-size: 12px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-on-accent); /* button.foreground */
+    font-size: var(--font-size-sm);
     cursor: pointer;
+    transition: background-color var(--transition-fast) linear;
 }
 
 .btn-primary:hover {
-    background: var(--accent);
-    filter: brightness(1.1);
+    background: var(--accent-hover); /* button.hoverBackground */
 }
 
 .btn-secondary {
     height: 26px;
     padding: 0 14px;
-    background: var(--bg-tab-hover); /* VSCode 次按钮 */
-    border: none;
-    border-radius: 3px;
-    color: var(--fg);
-    font-size: 12px;
+    background: var(--bg-btn-secondary); /* button.secondaryBackground */
+    border: 1px solid var(--border-btn); /* button.border */
+    border-radius: var(--radius-sm);
+    color: var(--fg); /* button.secondaryForeground */
+    font-size: var(--font-size-sm);
     cursor: pointer;
+    transition: background-color var(--transition-fast) linear;
 }
 
 .btn-secondary:hover {
-    background: var(--bg-tab-hover);
-    filter: brightness(1.15);
+    background: var(--bg-btn-secondary-hover); /* button.secondaryHoverBackground */
 }
 </style>

@@ -32,6 +32,13 @@ const ready = ref(false)
 const error = ref('')
 const title = ref('')
 
+// 截图页固定深色(见 docs/design/capture-design.md §7.2):与 .capture-page 的
+// 终端底色一致(两者都取 --bg-terminal),也不受"跟随系统"影响
+// (headless Chrome 的系统色是浅色)。
+// 直接写 data-theme 而不走 applyTheme —— 截图的浏览器 profile 不写用户偏好。
+// 时机安全:父组件 setup 先于子组件 Terminal 的挂载,后者从 CSS 变量取终端配色。
+document.documentElement.dataset.theme = 'dark'
+
 // 文本尾窗(去二进制解码的有界窗口),供 --marker 判定
 const TAIL_LIMIT = 4096
 const decoder = new TextDecoder()
@@ -105,7 +112,7 @@ onBeforeUnmount(() => {
 .capture-page {
     position: fixed;
     inset: 0;
-    background: #000;
+    background: var(--bg-terminal); /* 与终端面同色,避免题图边缘出现黑边 */
     overflow: hidden;
 }
 
@@ -119,8 +126,8 @@ onBeforeUnmount(() => {
     top: 8px;
     left: 8px;
     z-index: 10;
-    color: #666;
-    font: 12px/1.4 monospace;
+    color: var(--fg-3);
+    font: var(--font-size-sm) / 1.4 var(--font-mono);
 }
 
 .capture-error {
@@ -129,7 +136,7 @@ onBeforeUnmount(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #f48771;
-    font: 13px/1.6 monospace;
+    color: var(--error); /* errorForeground */
+    font: var(--font-size-md) / 1.6 var(--font-mono);
 }
 </style>

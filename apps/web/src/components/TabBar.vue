@@ -243,7 +243,7 @@ function stateClass(s: SessionInfo): string {
 .tab-bar {
     display: flex;
     align-items: stretch;
-    height: 30px;
+    height: var(--bar-h);
     flex: 0 0 auto;
     background: var(--bg-bar);
     border-bottom: 1px solid var(--bg-bar-border);
@@ -253,42 +253,58 @@ function stateClass(s: SessionInfo): string {
     user-select: none;
 }
 
+/* 取值全部对齐 VSCode Dark/Light Modern 的 tab.* 与 editorGroupHeader.tabs*:
+   非活动页签与页签栏同色,活动页签与内容区同色,靠底色区分而不是靠边框。 */
 .tab {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--gap-sm);
     max-width: 200px;
     min-width: 100px;
-    padding: 0 8px;
-    border-right: 1px solid var(--bg-bar-border);
-    color: var(--fg-dim);
-    font-size: 13px;
+    padding: 0 var(--gap-md);
+    background: var(--bg-tab);              /* tab.inactiveBackground */
+    color: var(--fg-tab);                   /* tab.inactiveForeground */
+    border-right: 1px solid var(--border-tab); /* tab.border */
+    /* 非活动页签没有顶条。用 transparent 而不是不写,是为了让活动页签的
+       1px 强调条不改变文字基线(fit 模式下所有页签等高)。 */
+    border-top: 1px solid transparent;
+    font-size: var(--font-size-md);
     cursor: grab;
     white-space: nowrap;
     flex: 0 0 auto;
-    background: var(--bg-tab);
-    border-top: 1px solid var(--border-tab);
+    /* box-shadow 不能叠加,只能整体覆盖;把"额外阴影"抽成变量,
+       让 drop 指示线与活动页签底部盖线能共存。 */
+    --tab-extra-shadow: 0 0 transparent;
+    box-shadow: var(--tab-extra-shadow), inset 0 -1px 0 transparent;
+    transition: background-color var(--transition-fast) linear;
 }
 
-/* 拖拽中的页签:半透明 + 抓取指针 */
+.tab:hover {
+    background: var(--bg-tab-hover);        /* tab.hoverBackground */
+}
+
+/* 拖拽中的页签:半透明 + 抓取指针(VSCode 没有这种拖拽视觉,产品自有) */
 .tab.dragging {
     opacity: 0.45;
     cursor: grabbing;
 }
 
+.tab.active {
+    background: var(--bg-tab-active);
+    color: var(--fg-bright);                /* tab.activeForeground */
+    border-top-color: var(--accent);        /* tab.activeBorderTop */
+    /* tab.activeBorder(= 页签自身底色):盖掉页签栏的下边线,
+       让活动页签与内容区连成一体。 */
+    box-shadow: var(--tab-extra-shadow), inset 0 -1px 0 var(--bg-tab-active);
+}
+
 /* ── 拖拽插入指示:在插入位置的页签边缘画一条 2px 强调线 ── */
 .tab.drop-left {
-    box-shadow: inset 2px 0 0 var(--accent);
+    --tab-extra-shadow: inset 2px 0 0 var(--accent);
 }
 
 .tab.drop-right {
-    box-shadow: inset -2px 0 0 var(--accent);
-}
-
-.tab.active {
-    background: var(--bg-tab-active);
-    color: var(--fg-bright);
-    border-top: 1px solid var(--accent); /* VSCode 活动页签顶条 */
+    --tab-extra-shadow: inset -2px 0 0 var(--accent);
 }
 
 .tab-title {
@@ -298,15 +314,15 @@ function stateClass(s: SessionInfo): string {
     min-width: 0;
 }
 
-/* ── 网络状态(延迟 + 抖动,颜色分级) ── */
+/* ── 网络状态(延迟,颜色分级) ── */
 .net-status {
     display: flex;
     align-items: center;
-    gap: 2px;
-    font-family: 'SF Mono', Consolas, monospace;
-    font-size: 12px;
+    gap: var(--gap-xs);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
     padding: 2px 8px;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     white-space: nowrap;
     flex: 0 0 auto;
 }
@@ -345,27 +361,27 @@ function stateClass(s: SessionInfo): string {
 .tab-close {
     background: none;
     border: none;
-    color: var(--fg-dim);
-    font-size: 11px;
+    color: var(--fg-2);
+    font-size: var(--font-size-xs);
     line-height: 1;
     padding: 2px 4px;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     flex: 0 0 auto;
-    /* 常驻显示:不依赖 hover(原先是 visibility: hidden + .tab:hover 才可见) */
+    /* 常驻显示:VSCode 默认 tab.closeButton 也是常驻(不依赖 hover) */
 }
 
 .tab-close:hover {
-    background: var(--bg-tab-hover);
+    background: var(--hover-toolbar); /* toolbar.hoverBackground */
     color: var(--fg-bright);
 }
 
 .tab-actions {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--gap-xs);
     margin-left: auto;
-    padding: 0 6px;
+    padding: 0 var(--gap-sm);
     flex: 0 0 auto;
     position: sticky;
     right: 0;
@@ -383,16 +399,16 @@ function stateClass(s: SessionInfo): string {
 .icon-btn {
     background: none;
     border: none;
-    color: var(--fg);
-    font-size: 14px;
+    color: var(--fg); /* icon.foreground */
+    font-size: var(--icon-size);
     cursor: pointer;
     padding: 2px 8px;
     line-height: 1;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
 }
 
 .icon-btn:hover {
-    background: var(--bg-tab-hover);
+    background: var(--hover-toolbar);
     color: var(--fg-bright);
 }
 </style>

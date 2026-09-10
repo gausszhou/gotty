@@ -279,8 +279,7 @@ html, body, #app {
 
 /* VSCode 风格字体栈 */
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue',
-        sans-serif;
+    font-family: var(--font-ui);
     color: var(--fg);
 }
 
@@ -312,27 +311,27 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    color: var(--fg-muted);
+    gap: var(--gap-md);
+    color: var(--fg-2);
 }
 
 /* boot 连接占位:避免空态卡片一闪而过 */
 .empty-loading {
     display: flex;
     align-items: center;
-    gap: 10px;
-    color: var(--fg-muted);
-    font-size: 13px;
+    gap: var(--gap-lg);
+    color: var(--fg-2);
+    font-size: var(--font-size-md);
 }
 
 .empty-loading-text {
-    color: var(--fg-hint);
+    color: var(--fg-2);
 }
 
 /* 简易旋转指示器 */
 .spinner {
-    width: 14px;
-    height: 14px;
+    width: var(--icon-size);
+    height: var(--icon-size);
     border: 2px solid var(--border-tab);
     border-top-color: var(--accent);
     border-radius: 50%;
@@ -346,57 +345,58 @@ body {
     }
 }
 
-/* 空态居中小卡片:点击创建终端会话 */
+/* 空态居中小卡片:点击创建终端会话(VSCode 欢迎页卡片的简化版) */
 .empty-card {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
+    gap: var(--gap-sm);
     padding: 28px 44px;
     /* 中英文宽度一致:以较宽的英文文案定宽(实测 en 247.6px),避免切换语言时卡片跳动 */
     min-width: 248px;
     background: var(--bg-dialog);
     border: 1px dashed var(--border-tab);
-    border-radius: 8px;
+    border-radius: var(--radius-xl);
     color: var(--fg);
     cursor: pointer;
     font-family: inherit;
-    transition: border-color 0.15s, background 0.15s;
+    transition: border-color var(--transition-fast) linear,
+        background-color var(--transition-fast) linear;
 }
 
 .empty-card:hover {
-    border-color: #ccc;
-    background: var(--bg-tab-hover);
+    border-color: var(--fg-2);
+    background: var(--bg-list-hover); /* list.hoverBackground */
 }
 
 .empty-card-icon {
     font-size: 26px;
     line-height: 1;
-    color: var(--fg-hint);
+    color: var(--fg-2);
 }
 
 .empty-card:hover .empty-card-icon {
-    color: #ccc;
+    color: var(--fg-bright);
 }
 
 .empty-card-title {
-    font-size: 15px;
+    font-size: var(--font-size-lg);
     /* 固定行高:中文字体的默认行高(normal)大于拉丁字体,不加会导致两种语言卡片高度不一致 */
     line-height: 1.4;
     color: var(--fg-bright);
 }
 
 .empty-card-hint {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     line-height: 1.4;
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 .empty-error {
     max-width: 320px;
     padding: 10px 16px;
-    color: #f48771;
-    font-size: 13px;
+    color: var(--error); /* errorForeground */
+    font-size: var(--font-size-md);
     text-align: center;
     line-height: 1.6;
 }
