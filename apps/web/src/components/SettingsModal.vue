@@ -18,10 +18,15 @@
         </div>
 
         <div class="settings-body">
-          <!-- 主题:深色 / 浅色 -->
+          <!-- 主题:跟随系统(默认) / 深色 / 浅色 -->
           <div class="settings-section">
             <div class="settings-label">{{ t('settings.theme') }}</div>
             <div class="settings-options">
+              <button
+                class="option-btn"
+                :class="{ active: theme === 'system' }"
+                @click="selectTheme('system')"
+              >◐ {{ t('settings.system') }}</button>
               <button
                 class="option-btn"
                 :class="{ active: theme === 'dark' }"
@@ -35,10 +40,15 @@
             </div>
           </div>
 
-          <!-- 语言:中文 / English -->
+          <!-- 语言:跟随系统(默认) / 中文 / English -->
           <div class="settings-section">
             <div class="settings-label">{{ t('settings.language') }}</div>
             <div class="settings-options">
+              <button
+                class="option-btn"
+                :class="{ active: lang === 'system' }"
+                @click="selectLang('system')"
+              >◐ {{ t('settings.system') }}</button>
               <button
                 class="option-btn"
                 :class="{ active: lang === 'zh' }"
@@ -82,21 +92,27 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { lang, setLang, t } from '../utils/i18n'
+import { t } from '../utils/i18n'
 import { getPageTitle, setPageTitle } from '../utils/api'
-import type { Theme } from '../utils/theme'
+import type { ThemePref } from '../utils/theme'
+import type { LangPref } from '../utils/i18n'
 
 const props = defineProps<{
     // 弹窗是否可见(由 App 控制)
     open: boolean
-    // 当前主题(驱动选项高亮;实际应用由 App 完成并回传)
-    theme: Theme
+    // 当前主题偏好(dark/light/system,驱动选项高亮;实际应用由 App 完成并回传)
+    theme: ThemePref
+    // 当前语言偏好(zh/en/system)。注意是**偏好**不是解析后的语言 ——
+    // 高亮"跟随系统"需要它,解析后的语言由 i18n 的 lang ref 提供。
+    lang: LangPref
 }>()
 
 const emit = defineEmits<{
     (e: 'close'): void
-    // 请求切换主题(目标主题),App 负责 applyTheme + notifyThemeChange
-    (e: 'theme', theme: Theme): void
+    // 请求切换主题偏好,App 负责 applyTheme + notifyThemeChange
+    (e: 'theme', theme: ThemePref): void
+    // 请求切换语言偏好,App 负责 applyLang + notifyLangChange
+    (e: 'lang', lang: LangPref): void
     // 页面标题已保存(服务端规范化后的值),App 负责应用 document.title
     (e: 'title-saved', title: string): void
 }>()
@@ -105,14 +121,16 @@ function close() {
     emit('close')
 }
 
-// 选择主题:与当前不同才上报(避免无谓重渲染)
-function selectTheme(theme: Theme) {
+// 选择主题偏好:与当前不同才上报(避免无谓重渲染)
+function selectTheme(theme: ThemePref) {
     if (theme !== props.theme) emit('theme', theme)
 }
 
-// 选择语言:setLang 是全局响应式状态,界面文案即时更新
-function selectLang(l: 'zh' | 'en') {
-    if (l !== lang.value) setLang(l)
+// 选择语言偏好:同样只在与当前不同时上报。
+// 注意比较的是**偏好**不是解析后的语言:偏好为 system 且系统就是中文时,
+// 点"跟随系统"应当没有变化,而点"中文"应当变成显式偏好(此后不再跟随)。
+function selectLang(l: LangPref) {
+    if (l !== props.lang) emit('lang', l)
 }
 
 // ── 页面标题 ──

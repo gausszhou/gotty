@@ -78,7 +78,9 @@ await evalJS(`(async () => { await fetch('/api/sessions/' + '${sid}', { method: 
 const goneMsg = await waitFor('disconnect overlay', `!!document.querySelector('.pane-overlay')`, 8000)
 console.log('GONE overlay shown:', goneMsg)
 // 点"重新连接":resolveSession 发现已销毁 → rebuild(服务端复活)
-await evalJS(`[...document.querySelectorAll('.pane-overlay button')].find(b => b.textContent.includes('重新连接'))?.click(); true`)
+// 用 .btn-primary 定位而不是匹配按钮文案:界面语言默认"跟随系统",在英文机器上
+// 文案是 Reconnect,按中文文案找会静默点空 —— 这个脚本不该依赖运行环境的语言。
+await evalJS(`document.querySelector('.pane-overlay .btn-primary')?.click(); true`)
 // 断言用页面态(重建与清单清理有竞态,清单内 status 断言不可靠):
 // overlay 消失 = 重新连接成功;pane 重建后 WS 连接,圆点即时变绿
 await waitFor('overlay gone', `!document.querySelector('.pane-overlay')`, 10000)

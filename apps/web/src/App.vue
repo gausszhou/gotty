@@ -17,9 +17,11 @@
     <!-- 设置弹窗(收纳主题 + 语言 + 页面标题) -->
     <SettingsModal
       :open="settingsOpen"
-      :theme="theme"
+      :theme="themePref"
+      :lang="langPref"
       @close="settingsOpen = false"
       @theme="onThemeSelect"
+      @lang="onLangSelect"
       @title-saved="onPageTitleSaved"
     />
 
@@ -60,8 +62,8 @@ import TabBar from './components/TabBar.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import { createSession, checkSessions, getPageTitle, type SessionInfo } from './utils/api'
-import { applyTheme, currentTheme, notifyThemeChange, type Theme } from './utils/theme'
-import { t } from './utils/i18n'
+import { applyTheme, currentThemePref, notifyThemeChange, type ThemePref } from './utils/theme'
+import { applyLang, currentLangPref, notifyLangChange, t, type LangPref } from './utils/i18n'
 import {
     loadManifest, upsertManifest, touchManifest, removeFromManifest, generateSessionID, findManifestEntry,
     type ManifestEntry,
@@ -74,17 +76,27 @@ const latency = ref<number | null>(null)
 const bootError = ref('')
 // boot 进行中:内容区显示连接占位,避免空态卡片在恢复会话前一闪而过
 const booting = ref(true)
-// 当前主题(dark/light);main.ts 已在 mount 前应用持久化主题,
-// 这里用 currentTheme() 同步初值,供设置弹窗高亮当前项。
-const theme = ref<Theme>(currentTheme())
+// 当前主题偏好(dark/light/system,默认 system 跟随系统);main.ts 已在 mount 前
+// 应用,这里用 currentThemePref() 同步初值,供设置弹窗高亮当前项。
+const themePref = ref<ThemePref>(currentThemePref())
+// 当前语言偏好(zh/en/system,默认 system 跟随系统/浏览器语言)。同上,
+// main.ts 已在 mount 前 applyLang;这里同步初值只为高亮"跟随系统"那一项。
+const langPref = ref<LangPref>(currentLangPref())
 // 设置弹窗可见性(右上角 ⚙ 打开,收纳主题 + 语言切换)
 const settingsOpen = ref(false)
 
-// 主题切换:设置弹窗选择目标主题,切换 CSS 变量并广播给 xterm
-function onThemeSelect(next: Theme) {
-    applyTheme(next)
-    notifyThemeChange(next)
-    theme.value = next
+// 主题切换:设置弹窗选择偏好,解析成实际主题 → 写 CSS 变量 → 广播给 xterm
+function onThemeSelect(pref: ThemePref) {
+    themePref.value = pref
+    notifyThemeChange(applyTheme(pref))
+}
+
+// 语言切换:设置弹窗选择偏好,解析成实际语言 → 更新全局 lang ref → 广播。
+// 文案重渲染靠 i18n 的响应式 ref,不需要广播;广播是留给需要"知道语言变了"的
+// 非模板消费者(与主题保持同一套形状)。
+function onLangSelect(pref: LangPref) {
+    langPref.value = pref
+    notifyLangChange(applyLang(pref))
 }
 
 // 页面标题:设置弹窗保存成功后应用为浏览器标签页标题;

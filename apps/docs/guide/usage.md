@@ -181,7 +181,12 @@ gotty capture --format html --out screen.html -- sh -c 'printf "\033[31mRED\033[
 
 ## 主题与终端颜色
 
-亮/暗主题纯前端切换（CSS 变量 + xterm 配色，选择会被记住）。会话注入
+设置里可选 **跟随系统 / 深色 / 浅色**，默认跟随系统（`prefers-color-scheme`，
+系统切换时页面与终端配色实时跟随）；选深色或浅色后即为固定值，不再跟随系统。
+界面语言同构：**跟随系统 / 中文 / English**，默认跟随系统（按浏览器上报的
+`navigator.language` 解析，`zh*` 为中文，其余为英文），手选后固定。
+两项偏好持久化的都是**偏好本身**而非解析结果，所以"跟随系统"能跨刷新存活。
+纯前端切换（CSS 变量 + xterm 配色，选择会被记住）。会话注入
 `COLORTERM=truecolor`（neovim/lazygit/fzf 等开启 24-bit 真彩），vim 等
 启动时的 `OSC 10/11 ; ?` 颜色查询由 xterm.js 按当前主题应答。主题不会
 在运行时推送给已启动的进程。
