@@ -13,7 +13,8 @@ import (
 
 // Options parameterizes one capture run.
 type Options struct {
-	// Command is the executable to run (use `sh -c "..."` for shell syntax).
+	// Command is the executable to run; for shell syntax wrap it in a shell
+	// (see shellSyntaxHint: `sh -c` on unix, `cmd /c` on Windows).
 	Command string
 	Args    []string
 
@@ -62,6 +63,16 @@ type Result struct {
 	Duration   time.Duration
 }
 
+// markerOverlap is how many bytes of the previous read have to be kept so that
+// a marker split across two reads is still matched: a marker of length n can
+// straddle a boundary by at most n-1 bytes.
+func markerOverlap(marker []byte) int {
+	if len(marker) == 0 {
+		return 0
+	}
+	return len(marker) - 1
+}
+
 // Run executes the command in a PTY of the requested size, feeds the
 // output into the emulator and snapshots the screen when the stop
 // condition is met (process exit, output silence, marker or timeout).
@@ -89,8 +100,8 @@ func Run(opts Options) (*Result, error) {
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, fmt.Errorf("command %q not found: "+
-				"use `gotty capture -- sh -c \"...\"` for shell syntax (%w)",
-				opts.Command, err)
+				"use `gotty capture -- %s` for shell syntax (%w)",
+				opts.Command, shellSyntaxHint, err)
 		}
 		return nil, err
 	}
@@ -109,10 +120,12 @@ func Run(opts Options) (*Result, error) {
 	var markerHit atomic.Bool
 
 	marker := []byte(opts.Marker)
-	// tail 保留最近 len(marker)+31 字节,保证跨块查找 marker。
+	// overlap 保存上一次读到数据的末尾 len(marker)-1 字节:marker 被拆到两次
+	// 读之间时靠它补齐,这个长度是充分必要的。
 	// marker 命中后不再追踪(快照在下一个 poll 周期触发)。
-	const markerSlack = 31
-	tail := make([]byte, 0, len(marker)+markerSlack)
+	overlap := make([]byte, 0, markerOverlap(marker))
+	// scan 是查找用的拼接缓冲,复用以免每次读都分配(读缓冲是 32KB)。
+	scan := make([]byte, 0, 32*1024+len(marker))
 
 	// readerDone 在进程退出时送达退出码;其他停止条件下进程仍活着。
 	readerDone := make(chan int, 1)
@@ -130,13 +143,20 @@ func Run(opts Options) (*Result, error) {
 				lastOutNs.Store(time.Now().UnixNano())
 				anyOutput.Store(true)
 				if len(marker) > 0 && !markerHit.Load() {
-					tail = append(tail, buf[:n]...)
-					if len(tail) > len(marker)+markerSlack {
-						tail = tail[len(tail)-len(marker)-markerSlack:]
-					}
-					if bytes.Index(tail, marker) >= 0 {
+					// 必须先查再截:"上一块尾巴 + 本块"整体参与查找。反过来
+					// (先截到滑动窗口再查)会把本块里明明存在的 marker 截掉——
+					// ConPTY 会在文本后追加较长的 OSC 标题/光标序列,窗口装不下
+					// 尾部就漏检,实测 `echo abc` 配 marker "ab" 必漏。
+					scan = append(scan[:0], overlap...)
+					scan = append(scan, buf[:n]...)
+					if bytes.Index(scan, marker) >= 0 {
 						markerHit.Store(true)
 					}
+					// 只留最后 len(marker)-1 字节给下一次拼接。
+					if keep := markerOverlap(marker); len(scan) > keep {
+						scan = scan[len(scan)-keep:]
+					}
+					overlap = append(overlap[:0], scan...)
 				}
 			}
 			if rerr != nil {
