@@ -166,10 +166,12 @@ func (server *Server) Run(ctx context.Context, options ...RunOption) error {
 //	POST /api/sessions/{id}/signal
 //	GET  /api/title                 deployment-wide page title (browser tab)
 //	PUT  /api/title                 save the page title {"title": "..."}
-//	GET  /ws                        WebSocket(多会话复用,协议见 docs/ws-multiplex.md)
+//	GET  /ws                        WebSocket(单连接多路复用;?mode=mirror 为只读监视通道)
 //
 // 注意:会话列表不再由服务端提供(客户端 localStorage 清单是列表来源),
 // 因此 GET /api/sessions 与 GET /api/sessions/history 已移除。
+// 单连接多路复用已实现(见 docs/design/ws-multiplex.md):一条 WS 承载 N 个
+// 会话通道,按路由帧 [session_id 16B][type][len][payload] 分发。
 func (server *Server) setupHandlers() http.Handler {
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -192,6 +194,8 @@ func (server *Server) setupHandlers() http.Handler {
 	apiMux.HandleFunc("GET /api/sessions/{id}/screen", server.handleGetScreen)
 	apiMux.HandleFunc("POST /api/sessions/{id}/wait", server.handleWaitSession)
 	apiMux.HandleFunc("POST /api/sessions/{id}/keys", server.handleKeys)
+	apiMux.HandleFunc("POST /api/sessions/{id}/mouse", server.handleMouse)
+	apiMux.HandleFunc("GET /api/sessions/{id}/mouse", server.handleMouseState)
 
 	// REST API — deployment-wide page title
 	apiMux.HandleFunc("GET /api/title", server.handleGetTitle)

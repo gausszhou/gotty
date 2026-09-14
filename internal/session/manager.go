@@ -73,6 +73,7 @@ func WithTerminalOptions(options terminal.Options) Option {
 			terminal.WithCloseSignal(parseSignal(options.CloseSignal, terminal.DefaultCloseSignal)),
 			terminal.WithTerm(options.Term),
 			terminal.WithEnv(options.Env),
+			terminal.WithWorkDir(options.WorkDir),
 		)
 		if options.CloseTimeout >= 0 {
 			m.baseOpts = append(m.baseOpts,

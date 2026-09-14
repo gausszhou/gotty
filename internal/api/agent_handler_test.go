@@ -30,7 +30,7 @@ func newAgentTestServer(t *testing.T, mirror bool, permitWrite bool) (*httptest.
 	}
 	var manager *session.Manager
 	if mirror {
-		manager = session.NewManager(session.WithMirrorFactory(MirrorFactory(true)))
+		manager = session.NewManager(session.WithMirrorFactory(MirrorFactory(true, 0)))
 	} else {
 		manager = session.NewManager()
 	}

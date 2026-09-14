@@ -16,7 +16,13 @@ const (
 // Options configures how Terminals are created.
 type Options struct {
 	// Env is a list of additional environment variables, e.g. ["FOO=bar"].
+	// It is fed by the repeatable `--env K=V` flag and by the per-session
+	// `env` creation parameter (the latter wins, appended later).
 	Env []string `json:"env"`
+
+	// WorkDir is the default working directory for sessions; empty means the
+	// user's home directory. A session-level `cwd` overrides it.
+	WorkDir string `json:"work_dir" flagName:"cwd" flagDescribe:"Default working directory for sessions (empty = home directory)" default:""`
 
 	// CloseSignal is sent to the process when the session is closed.
 	CloseSignal int `json:"close_signal" flagName:"close-signal" flagDescribe:"Signal sent to the command process when the session is closed" default:"1"`
@@ -73,6 +79,17 @@ func WithInitialSize(cols, rows int) Option {
 	return func(t *Terminal) {
 		if cols > 0 && rows > 0 {
 			t.size = pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
+		}
+	}
+}
+
+// WithWorkDir sets the working directory of the session process (per-session
+// `cwd`). An empty value keeps the default (the user's home directory, see
+// childWorkDir).
+func WithWorkDir(dir string) Option {
+	return func(t *Terminal) {
+		if dir != "" {
+			t.workDir = dir
 		}
 	}
 }

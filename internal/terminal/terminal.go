@@ -1,8 +1,10 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +22,10 @@ type Terminal struct {
 	command string
 	args    []string
 	env     []string
+
+	// workDir overrides the child process working directory (per-session
+	// `cwd`); empty means childWorkDir().
+	workDir string
 
 	closeSignal  syscall.Signal
 	closeTimeout time.Duration
@@ -42,6 +48,9 @@ type Terminal struct {
 	exited  chan struct{}
 	waitMu  sync.Mutex
 	waitErr error
+	// exitCode is the process exit status, published with waitErr
+	// (nil before exit, or when the status is unavailable).
+	exitCode *int
 }
 
 // New starts command with args inside a new PTY.
@@ -64,7 +73,7 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 		command,
 		term.args,
 		buildEnv(command, term.env),
-		childWorkDir(),
+		term.childWorkDir(),
 		term.size.Cols,
 		term.size.Rows,
 		term.rawMode,
@@ -85,12 +94,38 @@ func New(command string, args []string, options ...Option) (*Terminal, error) {
 	go func() {
 		term.waitMu.Lock()
 		term.waitErr = proc.Wait()
+		term.exitCode = exitCodeOf(term.waitErr)
 		term.waitMu.Unlock()
 		proc.releaseAfterExit()
 		close(term.exited)
 	}()
 
 	return term, nil
+}
+
+// childWorkDir returns the working directory for this session: the
+// per-session override when one was given, otherwise the default (the user's
+// home directory — see childWorkDir).
+func (t *Terminal) childWorkDir() string {
+	if t.workDir != "" {
+		return t.workDir
+	}
+	return childWorkDir()
+}
+
+// exitCodeOf extracts the process exit status from a Wait error: 0 on a clean
+// exit, the code from an *exec.ExitError, nil when unavailable.
+func exitCodeOf(err error) *int {
+	if err == nil {
+		code := 0
+		return &code
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		code := exitErr.ExitCode()
+		return &code
+	}
+	return nil
 }
 
 // buildEnv composes the process environment: the current environment,
@@ -246,6 +281,19 @@ func (t *Terminal) Exited() bool {
 	default:
 		return false
 	}
+}
+
+// ExitCode returns the process exit status once the process has exited and
+// nil before that (or when the status is unavailable). 0 means a clean exit.
+func (t *Terminal) ExitCode() *int {
+	select {
+	case <-t.exited:
+	default:
+		return nil
+	}
+	t.waitMu.Lock()
+	defer t.waitMu.Unlock()
+	return t.exitCode
 }
 
 // Wait blocks until the process has exited.
