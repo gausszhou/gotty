@@ -427,7 +427,7 @@ func TestMultiplexMultipleSessions(t *testing.T) {
 
 	// input to session 1 must echo only on channel 1
 	sendRoute(t, conn, id1, terminal.Input, []byte("one\n"))
-	sid, payload := readRouteUntil(t, conn, terminal.Output)
+	sid, payload := readEchoRoute(t, conn, id1, "one")
 	if sid != id1 {
 		t.Fatalf("session 1 echo routed to %q", sid)
 	}
@@ -437,13 +437,41 @@ func TestMultiplexMultipleSessions(t *testing.T) {
 
 	// input to session 2 must echo only on channel 2
 	sendRoute(t, conn, id2, terminal.Input, []byte("two\n"))
-	sid, payload = readRouteUntil(t, conn, terminal.Output)
+	sid, payload = readEchoRoute(t, conn, id2, "two")
 	if sid != id2 {
 		t.Fatalf("session 2 echo routed to %q", sid)
 	}
 	if !strings.Contains(string(payload), "two") {
 		t.Fatalf("session 2 echo missing 'two': %q", payload)
 	}
+}
+
+// readEchoRoute reads frames until the expected text shows up in Output
+// frames of the wanted session and returns that frame. Unlike the framing
+// assertions above it must tolerate stray frames: after SetReplayDone the
+// attach-time SIGWINCH jitter (jitterSize) can make the PTY emit a repaint
+// burst (Git Bash's winpty re-emits the init sequence on resize), and the
+// echo may be split across several chunks. Frames of other sessions are
+// ignored so routing isolation is still what is asserted.
+func readEchoRoute(t *testing.T, conn *websocket.Conn, sid, want string) (string, []byte) {
+	t.Helper()
+	acc := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rsid, msg := readRoute(t, conn)
+		if msg.Type != terminal.Output {
+			continue
+		}
+		if rsid != sid {
+			continue // 另一会话的迟到重绘帧,与本次回显断言无关
+		}
+		acc += string(msg.Payload)
+		if strings.Contains(acc, want) {
+			return rsid, msg.Payload
+		}
+	}
+	t.Fatalf("timed out waiting for echo %q on session %q (got %q)", want, sid, acc)
+	return "", nil
 }
 
 // TestMultiplexPreemptsSession: a second connection attaching the same
