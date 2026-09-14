@@ -24,6 +24,21 @@ type Options struct {
 	// (vim, htop, mc) block on these queries at startup, so leaving this
 	// on is what lets the agent-driving API work without a client.
 	AnswerQueries bool `json:"answer_queries" flagName:"answer-queries" flagDescribe:"Answer terminal queries when no browser client is attached" default:"true"`
+
+	// Scrollback is how many history lines each session mirror keeps.
+	// x/vt defaults to 10000 lines (≈130MB per 120-column session), so the
+	// default is lowered; 0 disables history entirely and makes the
+	// `part=scrollback` read answer 503. A session-level `scrollback`
+	// creation parameter overrides it.
+	Scrollback int `json:"scrollback" flagName:"scrollback" flagDescribe:"Scrollback lines kept per session mirror (0 disables history)" default:"1000"`
+
+	// Font/FontSize drive native PNG rasterization (GET /screen?format=png).
+	// Font empty uses the embedded Go Mono (Latin only); a path to a
+	// CJK-capable TTF/OTF renders CJK instead of tofu boxes. An unreadable
+	// font is an error, never a silent fallback.
+	Font     string `json:"font" flagName:"font" flagDescribe:"TTF/OTF font file for native PNG rasterization (empty = embedded Go Mono)" default:""`
+	FontSize int    `json:"font_size" flagName:"font-size" flagDescribe:"Font size in points for native PNG rasterization (0 = derive from cell height)" default:"0"`
+
 	// Timeout 是会话淘汰策略:超过该秒数没有任何客户端附着(浏览器全关/
 	// 断连)即销毁 PTY 进程;会话记录保留,可凭 id 重新运行。默认 900s。
 	Timeout int `json:"timeout" flagName:"timeout" flagDescribe:"Idle timeout seconds for destroying unattached sessions (0 to disable)" default:"900"`

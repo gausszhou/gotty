@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -265,13 +264,13 @@ func TestSiteEndpoints(t *testing.T) {
 	}
 }
 
-// dialWS opens a websocket to /ws?session_id=id with the webtty subprotocol.
-func dialWS(t *testing.T, ts *httptest.Server, id string) *websocket.Conn {
+// dialMultiplex opens a multiplexed websocket to /ws (no session_id).
+func dialMultiplex(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?session_id=" + id
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		Subprotocols: terminal.Protocols,
 	})
@@ -281,12 +280,25 @@ func dialWS(t *testing.T, ts *httptest.Server, id string) *websocket.Conn {
 	return conn
 }
 
-// readFrame reads the next binary message with a deadline.
-func readWSFrame(t *testing.T, conn *websocket.Conn) []byte {
+// sendRoute sends one routed frame over the multiplexed connection.
+func sendRoute(t *testing.T, conn *websocket.Conn, sid string, typ byte, payload []byte) {
+	t.Helper()
+	frame, err := terminal.EncodeRouteFrame([]byte(sid), typ, payload)
+	if err != nil {
+		t.Fatalf("failed to encode route frame: %s", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		t.Fatalf("failed to send route frame: %s", err)
+	}
+}
+
+// readRoute reads the next binary message and decodes it as a routed frame.
+func readRoute(t *testing.T, conn *websocket.Conn) (string, terminal.ClientMessage) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	typ, reader, err := conn.Reader(ctx)
 	if err != nil {
 		t.Fatalf("failed to read frame: %s", err)
@@ -298,47 +310,76 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) []byte {
 	if err != nil {
 		t.Fatalf("failed to read frame payload: %s", err)
 	}
-	return data
+	rsid, msg, err := terminal.DecodeRouteFrame(data)
+	if err != nil {
+		t.Fatalf("failed to decode route frame: %s", err)
+	}
+	return string(rsid), msg
 }
 
-func TestWSAttachE2E(t *testing.T) {
+// readRouteUntil reads routed frames until one of the wanted type arrives
+// (other types are skipped). Returns the session id and payload.
+func readRouteUntil(t *testing.T, conn *websocket.Conn, wantType byte) (string, []byte) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		sid, msg := readRoute(t, conn)
+		if msg.Type == wantType {
+			return sid, msg.Payload
+		}
+	}
+	t.Fatalf("timed out waiting for route frame type %c", wantType)
+	return "", nil
+}
+
+// TestMultiplexAttachE2E: one connection attaches a session, exchanges input
+// and output, detaches, and the same session survives for a later re-attach.
+func TestMultiplexAttachE2E(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 	created := createSession(t, ts, `{"command":"cat"}`)
 	id := created["id"].(string)
 
-	// 1. attach, receive the window title frame
-	conn := dialWS(t, ts, id)
+	conn := dialMultiplex(t, ts)
 	defer conn.CloseNow()
 
-	frame := readWSFrame(t, conn)
-	if frame[0] != terminal.SetWindowTitle {
-		t.Fatalf("unexpected first frame type `%c`", frame[0])
+	// 1. attach -> AttachOK, then the init frames (title + replay-done)
+	sendRoute(t, conn, id, terminal.Attach, nil)
+	if sid, msg := readRoute(t, conn); msg.Type != terminal.AttachOK || sid != id {
+		t.Fatalf("unexpected attach frame sid=%q type=%c", sid, msg.Type)
+	}
+	// 消费 init 帧(标题 + 重放完成标记)再发输入
+	for {
+		sid, msg := readRoute(t, conn)
+		if sid != id {
+			t.Fatalf("init frame routed to wrong sid %q", sid)
+		}
+		if msg.Type == terminal.SetReplayDone {
+			break
+		}
 	}
 
-	// 2. send input, expect it echoed back by the PTY
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := conn.Write(ctx, websocket.MessageBinary, terminal.EncodeFrame(terminal.Input, []byte("hello\n"))); err != nil {
-		t.Fatalf("failed to send input: %s", err)
-	}
+	// 2. send input, expect it echoed back on the SAME session channel
+	sendRoute(t, conn, id, terminal.Input, []byte("hello\n"))
 
 	got := ""
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(got, "hello") && time.Now().Before(deadline) {
-		frame := readWSFrame(t, conn)
-		if frame[0] != terminal.Output {
+		sid, msg := readRoute(t, conn)
+		if sid != id {
+			t.Fatalf("echo routed to wrong sid %q", sid)
+		}
+		if msg.Type != terminal.Output {
 			continue
 		}
-		got += string(frame[1:])
+		got += string(msg.Payload)
 	}
 	if !strings.Contains(got, "hello") {
 		t.Fatalf("expected echo of `hello` in output, got: %q", got)
 	}
 
-	// 3. close; the session detaches but keeps running
-	conn.CloseNow()
+	// 3. detach; the session keeps running but returns to idle
+	sendRoute(t, conn, id, terminal.Detach, nil)
 	time.Sleep(100 * time.Millisecond)
-
 	resp, err := http.Get(ts.URL + "/api/sessions/" + id)
 	if err != nil {
 		t.Fatalf("failed to get session: %s", err)
@@ -349,87 +390,140 @@ func TestWSAttachE2E(t *testing.T) {
 	}
 	json.NewDecoder(resp.Body).Decode(&state)
 	if state.State != "idle" {
-		t.Fatalf("unexpected state after disconnect: %s", state.State)
+		t.Fatalf("unexpected state after detach: %s", state.State)
 	}
 
-	// 4. reconnect: the same session is still alive
-	conn2 := dialWS(t, ts, id)
+	// 4. re-attach from a fresh connection proves the session survived
+	conn2 := dialMultiplex(t, ts)
 	defer conn2.CloseNow()
-
-	frame = readWSFrame(t, conn2)
-	if frame[0] != terminal.SetWindowTitle {
-		t.Fatalf("unexpected reattach frame type `%c`", frame[0])
-	}
-
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	if err := conn2.Write(ctx2, websocket.MessageBinary, terminal.EncodeFrame(terminal.Input, []byte("world\n"))); err != nil {
-		t.Fatalf("failed to send input: %s", err)
-	}
-
-	got = ""
-	deadline = time.Now().Add(5 * time.Second)
-	for !strings.Contains(got, "world") && time.Now().Before(deadline) {
-		frame = readWSFrame(t, conn2)
-		if frame[0] != terminal.Output {
-			continue
-		}
-		got += string(frame[1:])
-	}
-	if !strings.Contains(got, "world") {
-		t.Fatalf("expected echo of `world` in output, got: %q", got)
+	sendRoute(t, conn2, id, terminal.Attach, nil)
+	if _, msg := readRoute(t, conn2); msg.Type != terminal.AttachOK {
+		t.Fatalf("unexpected reattach frame type `%c`", msg.Type)
 	}
 }
 
-func TestWSPreemptsSession(t *testing.T) {
+// TestMultiplexMultipleSessions: a single connection carries two sessions
+// whose input/output are isolated by session id.
+func TestMultiplexMultipleSessions(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	c1 := createSession(t, ts, `{"command":"cat"}`)
+	c2 := createSession(t, ts, `{"command":"cat"}`)
+	id1 := c1["id"].(string)
+	id2 := c2["id"].(string)
+
+	conn := dialMultiplex(t, ts)
+	defer conn.CloseNow()
+
+	sendRoute(t, conn, id1, terminal.Attach, nil)
+	if _, msg := readRoute(t, conn); msg.Type != terminal.AttachOK {
+		t.Fatalf("unexpected attach1 frame type `%c`", msg.Type)
+	}
+	readRouteUntil(t, conn, terminal.SetReplayDone)
+	sendRoute(t, conn, id2, terminal.Attach, nil)
+	if _, msg := readRoute(t, conn); msg.Type != terminal.AttachOK {
+		t.Fatalf("unexpected attach2 frame type `%c`", msg.Type)
+	}
+	readRouteUntil(t, conn, terminal.SetReplayDone)
+
+	// input to session 1 must echo only on channel 1
+	sendRoute(t, conn, id1, terminal.Input, []byte("one\n"))
+	sid, payload := readEchoRoute(t, conn, id1, "one")
+	if sid != id1 {
+		t.Fatalf("session 1 echo routed to %q", sid)
+	}
+	if !strings.Contains(string(payload), "one") {
+		t.Fatalf("session 1 echo missing 'one': %q", payload)
+	}
+
+	// input to session 2 must echo only on channel 2
+	sendRoute(t, conn, id2, terminal.Input, []byte("two\n"))
+	sid, payload = readEchoRoute(t, conn, id2, "two")
+	if sid != id2 {
+		t.Fatalf("session 2 echo routed to %q", sid)
+	}
+	if !strings.Contains(string(payload), "two") {
+		t.Fatalf("session 2 echo missing 'two': %q", payload)
+	}
+}
+
+// readEchoRoute reads frames until the expected text shows up in Output
+// frames of the wanted session and returns that frame. Unlike the framing
+// assertions above it must tolerate stray frames: after SetReplayDone the
+// attach-time SIGWINCH jitter (jitterSize) can make the PTY emit a repaint
+// burst (Git Bash's winpty re-emits the init sequence on resize), and the
+// echo may be split across several chunks. Frames of other sessions are
+// ignored so routing isolation is still what is asserted.
+func readEchoRoute(t *testing.T, conn *websocket.Conn, sid, want string) (string, []byte) {
+	t.Helper()
+	acc := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rsid, msg := readRoute(t, conn)
+		if msg.Type != terminal.Output {
+			continue
+		}
+		if rsid != sid {
+			continue // 另一会话的迟到重绘帧,与本次回显断言无关
+		}
+		acc += string(msg.Payload)
+		if strings.Contains(acc, want) {
+			return rsid, msg.Payload
+		}
+	}
+	t.Fatalf("timed out waiting for echo %q on session %q (got %q)", want, sid, acc)
+	return "", nil
+}
+
+// TestMultiplexPreemptsSession: a second connection attaching the same
+// session preempts the first; the first receives an 'E' event (0x01).
+func TestMultiplexPreemptsSession(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 	created := createSession(t, ts, `{"command":"cat"}`)
 	id := created["id"].(string)
 
-	conn := dialWS(t, ts, id)
-	defer conn.CloseNow()
-	if frame := readWSFrame(t, conn); frame[0] != terminal.SetWindowTitle {
-		t.Fatalf("unexpected first frame type `%c`", frame[0])
+	conn1 := dialMultiplex(t, ts)
+	defer conn1.CloseNow()
+	sendRoute(t, conn1, id, terminal.Attach, nil)
+	if _, msg := readRoute(t, conn1); msg.Type != terminal.AttachOK {
+		t.Fatalf("unexpected attach frame type `%c`", msg.Type)
 	}
-	// 回放完成标记(回放为空时紧随标题帧);若不消费,后续抢占测试里
-	// conn.Reader 会先读到这个缓冲帧而不是 close
-	if frame := readWSFrame(t, conn); frame[0] != terminal.SetReplayDone {
-		t.Fatalf("expected SetReplayDone after title, got type `%c`", frame[0])
-	}
+	readRouteUntil(t, conn1, terminal.SetReplayDone)
 
-	// a second attach to the same session preempts the first one
-	conn2 := dialWS(t, ts, id)
+	// a second connection attaches the same session -> conn1 is preempted
+	conn2 := dialMultiplex(t, ts)
 	defer conn2.CloseNow()
+	sendRoute(t, conn2, id, terminal.Attach, nil)
 
-	// the old client is closed with TryAgainLater ("session preempted")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, _, err := conn.Reader(ctx); err == nil {
-		t.Fatal("expected the preempted client to be closed")
-	} else {
-		var closeErr websocket.CloseError
-		if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusTryAgainLater {
-			t.Fatalf("unexpected close error: %v", err)
-		}
+	// conn1 receives an 'E' event with status 0x01 (preempted) on its channel
+	sid, payload := readRouteUntil(t, conn1, terminal.Event)
+	if sid != id {
+		t.Fatalf("event routed to wrong sid %q", sid)
+	}
+	if len(payload) != 1 || payload[0] != terminal.EventPreempted {
+		t.Fatalf("expected preempted event, got payload %v", payload)
 	}
 
-	// the new client owns the session: it receives the init frames
-	// (title + replay of anything printed so far)
-	if frame := readWSFrame(t, conn2); frame[0] != terminal.SetWindowTitle {
-		t.Fatalf("unexpected preempting frame type `%c`", frame[0])
+	// conn2 now owns the session: AttachOK + init frames
+	if _, msg := readRoute(t, conn2); msg.Type != terminal.AttachOK {
+		t.Fatalf("unexpected preempting frame type `%c`", msg.Type)
 	}
 }
 
-func TestWSMissingSession(t *testing.T) {
+// TestMultiplexMissingSession: attaching an unknown session is rejected with
+// an AttachErr route frame (not a connection close).
+func TestMultiplexMissingSession(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 
-	conn := dialWS(t, ts, "no-such-session")
+	conn := dialMultiplex(t, ts)
 	defer conn.CloseNow()
+	sendRoute(t, conn, "zzzzzzzzzzzzzzzz", terminal.Attach, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, _, err := conn.Reader(ctx); err == nil {
-		t.Fatal("expected error for missing session")
+	sid, msg := readRoute(t, conn)
+	if msg.Type != terminal.AttachErr {
+		t.Fatalf("unexpected frame type `%c`", msg.Type)
+	}
+	if sid != "zzzzzzzzzzzzzzzz" {
+		t.Fatalf("AttachErr routed to wrong sid %q", sid)
 	}
 }
 

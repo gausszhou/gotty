@@ -169,7 +169,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		session.WithIdleTimeout(time.Duration(appOptions.Timeout)*time.Second),
 		session.WithTerminalOptions(*terminalOptions),
 		session.WithStore(store),
-		session.WithMirrorFactory(api.MirrorFactory(appOptions.Mirror)),
+		session.WithMirrorFactory(api.MirrorFactory(appOptions.Mirror, appOptions.Scrollback)),
 		session.WithAnswerQueries(appOptions.AnswerQueries),
 	)
 

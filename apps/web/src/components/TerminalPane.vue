@@ -29,7 +29,8 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import Terminal from './Terminal.vue'
-import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
+import { type TermHandle, type WSWrapper } from '../utils/ws'
+import { multiplexer } from '../utils/multiplexer'
 import { getSession, createSession } from '../utils/api'
 import { t } from '../utils/i18n'
 import { findManifestEntry, upsertManifest } from '../utils/manifest'
@@ -126,7 +127,7 @@ function attach() {
         }
         logger.info('attach', 'session resolved ok (session=%s)', sid)
 
-        wsWrapper = openTerminalWS(termHandle, sid, {
+        wsWrapper = await multiplexer.attach(sid, termHandle, {
             onConnect: () => {
                 logger.info('attach', 'connected (session=%s)', props.sessionId)
                 connState.value = 'connected'
@@ -223,8 +224,8 @@ onBeforeUnmount(() => {
     font-family: var(--font-mono);
     font-size: var(--term-font-size);
     padding: calc(var(--term-cell-w) / 2);
-    /* 右侧不留内边距:网格右边本来就是 xterm 6 的滚动条槽(见 Terminal.vue 的
-       overviewRuler 说明),再叠半个字符,全屏 TUI 自绘底色时就是一条明显的
+    /* 右侧不留内边距:网格右边本来就是 xterm 的滚动条槽(见 Terminal.vue 的
+       overviewRulerWidth 说明),再叠半个字符,全屏 TUI 自绘底色时就是一条明显的
        空白。去掉后右边只剩"取整余量 + 1px 滚动条槽"(实测 1000px 窗口:
        留白 18.6px → 3.2px),与左边 3.85px 视觉上基本对称。
        注意只去右边:去掉左边会让网格贴住页签栏边缘,那是上面这条内边距

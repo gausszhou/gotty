@@ -493,6 +493,28 @@ type Emulator struct {
 	// expose mode state; it is reported in snapshots.
 	cursorVisible bool
 
+	// modes holds the private DECSET modes the wrapper tracks for itself
+	// (mouse reporting, bracketed paste) — x/vt applies them but does not
+	// expose their state, and the agent API needs it (mouse encoding choice,
+	// 409 when the application never asked for mouse events, and the
+	// conditional bracketed-paste wrapping).
+	modes map[int]bool
+
+	// scrollbackDisabled records a 0 scrollback budget: the API then answers
+	// 503 (like --mirror=false) instead of an empty history.
+	scrollbackDisabled bool
+	// scrollbackLines is the configured capacity (-1 = x/vt's own default).
+	scrollbackLines int
+
+	// Synthetic mouse state (0004 §2.1): the virtual cursor, the buttons
+	// currently held down and the last encoded event. It lets `mouse state`
+	// report what an agent did last and lets the PNG renderer overlay the
+	// virtual cursor. Guarded by the same caller-side lock as the rest of the
+	// emulator.
+	mouseCol, mouseRow int
+	mouseHeld          map[string]bool
+	mouseLast          string
+
 	// images holds every picture extracted from the output stream so far.
 	images []ImageAsset
 
@@ -518,8 +540,28 @@ type Emulator struct {
 // of answer-free chunks cost at most one short delay.
 const answerWait = 10 * time.Millisecond
 
-// NewEmulator creates an emulator with a cols×rows screen.
+// DefaultScrollbackLines is how many history lines a mirror keeps by default.
+//
+// x/vt defaults to 10000 lines, which costs ≈130MB for a 120-column session
+// (uv.Cell is ≈112B, see docs/feat/0005 §1.1) and buys nothing for the agent
+// read path: the default is therefore lowered and the capacity is exposed
+// (`serve --scrollback`, per-session `scrollback`).
+const DefaultScrollbackLines = 1000
+
+// NewEmulator creates an emulator with a cols×rows screen and the default
+// scrollback capacity.
 func NewEmulator(cols, rows int) *Emulator {
+	return NewEmulatorWithScrollback(cols, rows, DefaultScrollbackLines)
+}
+
+// NewEmulatorWithScrollback creates an emulator with an explicit scrollback
+// budget:
+//
+//	maxLines > 0  keep that many history lines;
+//	maxLines = 0  disable history (reads answer 503; the underlying buffer is
+//	              shrunk to one line so x/vt's 10000-line default is not paid);
+//	maxLines < 0  keep x/vt's own default.
+func NewEmulatorWithScrollback(cols, rows, maxLines int) *Emulator {
 	if cols < 1 {
 		cols = 1
 	}
@@ -527,12 +569,25 @@ func NewEmulator(cols, rows int) *Emulator {
 		rows = 1
 	}
 	e := &Emulator{
-		vt:            vt.NewEmulator(cols, rows),
-		cursorVisible: true,
-		cellW:         9,
-		cellH:         18,
-		answersCap:    64 * 1024,
-		answerCh:      make(chan []byte, 64),
+		vt:              vt.NewEmulator(cols, rows),
+		cursorVisible:   true,
+		modes:           make(map[int]bool),
+		cellW:           9,
+		cellH:           18,
+		answersCap:      64 * 1024,
+		answerCh:        make(chan []byte, 64),
+		scrollbackLines: maxLines,
+		mouseHeld:       make(map[string]bool),
+	}
+	if maxLines > 0 {
+		e.vt.SetScrollbackSize(maxLines)
+	} else if maxLines == 0 {
+		// x/vt has no exported way to detach the scrollback buffer
+		// (SetScrollbackSize(0) falls back to its 10000-line default), so the
+		// memory is capped to a single line and the disable is reported by the
+		// wrapper (ScrollbackGrid → 503).
+		e.scrollbackDisabled = true
+		e.vt.SetScrollbackSize(1)
 	}
 	e.scanner.onMode = e.trackMode
 	e.scanner.onRIS = e.onRIS
@@ -618,8 +673,18 @@ func (e *Emulator) trackMode(priv bool, params []int, set bool) {
 		return
 	}
 	for _, p := range params {
-		if p == 25 {
+		switch p {
+		case modeCursorVisible:
 			e.cursorVisible = set
+		case modeMouseX10, modeMouseNormal, modeMouseHighlight,
+			modeMouseButtonEvent, modeMouseAnyEvent,
+			modeMouseUTF8, modeMouseSGR, modeMouseUrxvt,
+			modeBracketedPaste:
+			if set {
+				e.modes[p] = true
+			} else {
+				delete(e.modes, p)
+			}
 		}
 	}
 }
@@ -630,6 +695,9 @@ func (e *Emulator) onRIS() {
 	e.cursorVisible = true
 	e.images = nil
 	e.kittyPending = kittyPending{}
+	e.modes = make(map[int]bool)
+	e.mouseHeld = make(map[string]bool)
+	e.mouseLast = ""
 	e.scanner.reset()
 	e.clearAnswers()
 }

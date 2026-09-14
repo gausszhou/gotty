@@ -12,7 +12,8 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import Terminal from './Terminal.vue'
-import { openTerminalWS, type TermHandle } from '../utils/ws'
+import { type TermHandle, type WSWrapper } from '../utils/ws'
+import { multiplexer } from '../utils/multiplexer'
 import { getSession } from '../utils/api'
 import { logger } from '../utils/logger'
 
@@ -84,7 +85,7 @@ onMounted(async () => {
         onWriteParsed: (cb) => terminalRef.value?.onWriteParsed(cb),
     }
 
-    const ws = openTerminalWS(handle, sid, {
+    const ws = await multiplexer.attach(sid, handle, {
         // 收到服务端握手标记即"渲染就绪":chromedp 轮询此标志后开始判定
         onReady: () => {
             window.__gottyCaptureReady = true
@@ -101,7 +102,7 @@ onMounted(async () => {
     window.document.title = title.value || `capture ${sid}`
 })
 
-const wsRef = ref<ReturnType<typeof openTerminalWS> | null>(null)
+const wsRef = ref<WSWrapper | null>(null)
 
 onBeforeUnmount(() => {
     wsRef.value?.close()

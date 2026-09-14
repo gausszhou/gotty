@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 )
@@ -43,7 +44,87 @@ const (
 	// (Named for the historical attach-time output replay; the marker itself
 	// is still what gates input forwarding in the browser.)
 	SetReplayDone = '6'
+	// MirrorDiff carries the changed screen rows for a read-only monitor
+	// subscription (`GET /ws?...&mode=mirror`). It is only ever sent on a
+	// mirror connection, never on an attached one: a monitor reads the
+	// screen mirror instead of the PTY stream and must not preempt the
+	// attached client. Payload is a JSON MirrorDiffFrame.
+	MirrorDiff = '7'
 )
+
+// Multiplexed WebSocket routing message types (ws-multiplex.md). A single
+// WebSocket connection carries many logical channels, each scoped to a
+// session by a 16-byte id in the routing header. These types are layered on
+// top of the session-level types above and never change their byte values.
+const (
+	// Attach (C→S) binds the client's logical channel to the session named in
+	// the routing header; the server streams init frames once it replies
+	// AttachOK. A second attach to the same session preempts the first.
+	Attach = 'A'
+	// Detach (C→S) releases the client's logical channel without destroying
+	// the session (the session keeps running on the server).
+	Detach = 'D'
+	// AttachOK (S→C) confirms an attach succeeded; init frames (title,
+	// prefs, replay) follow on this channel.
+	AttachOK = 'a'
+	// AttachErr (S→C) rejects an attach (unknown or destroyed session); the
+	// payload is a human-readable reason phrase.
+	AttachErr = 'b'
+	// Event (S→C) carries a 1-byte session status change on a logical
+	// channel (see Event* status codes below).
+	Event = 'E'
+
+	// EventPreempted is the Event payload when another client took over the
+	// session: the channel should show "session taken over" and NOT auto
+	// reconnect, to avoid a preemption ping-pong.
+	EventPreempted byte = 0x01
+	// EventDestroyed is the Event payload when the session was destroyed
+	// (REST DELETE): the channel should show "session destroyed".
+	EventDestroyed byte = 0x02
+)
+
+// Routing header constants for the multiplexed WebSocket protocol.
+const (
+	// RouteSessionIDLen is the fixed size of the session id field in a routed
+	// frame. Server-generated ids are exactly 16 base36 chars; an all-zero id
+	// marks a connection-level (not session-scoped) message such as a ping.
+	RouteSessionIDLen = 16
+	// RouteHeaderLen = session id (16) + type (1) + length (2, big-endian).
+	RouteHeaderLen = RouteSessionIDLen + 1 + 2
+	// MaxRoutePayload bounds a single routed payload to the 2-byte length
+	// field. Terminal frames are chunked to 32 KiB, so this is never hit in
+	// practice.
+	MaxRoutePayload = 65535
+)
+
+// MirrorDiffFrame is the payload of a MirrorDiff frame — one monitor update.
+//
+// Lines holds only the rows that changed since the previous update (dirty-row
+// diff), except on the first frame and after a resize, which are full.
+type MirrorDiffFrame struct {
+	SessionID string `json:"session_id"`
+	Version   uint64 `json:"version"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+	// Full is true when Lines covers the whole screen (first frame or after
+	// a resize); a client must drop any state it had for rows not listed.
+	Full   bool             `json:"full"`
+	Cursor MirrorCursor     `json:"cursor"`
+	Lines  []MirrorDiffLine `json:"lines"`
+}
+
+// MirrorDiffLine is one changed row in a MirrorDiffFrame.
+type MirrorDiffLine struct {
+	Row  int    `json:"row"`
+	Text string `json:"text"`
+}
+
+// MirrorCursor is the mirror-tracked cursor reported with a diff.
+type MirrorCursor struct {
+	Row     int  `json:"row"`
+	Col     int  `json:"col"`
+	Visible bool `json:"visible"`
+}
 
 // EncodeFrame wraps payload with a message type byte:
 // [type byte] [payload bytes...]
@@ -85,6 +166,26 @@ func EncodeReplayDone() []byte {
 	return []byte{SetReplayDone}
 }
 
+// EncodeMirrorDiff builds a MirrorDiff frame: the type byte followed by the
+// JSON payload, so the frame stays a binary WebSocket message while the
+// payload remains inspectable from a shell (and cheap to decode in JS).
+func EncodeMirrorDiff(frame MirrorDiffFrame) ([]byte, error) {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return nil, err
+	}
+	return EncodeFrame(MirrorDiff, payload), nil
+}
+
+// DecodeMirrorDiff parses the payload of a MirrorDiff frame.
+func DecodeMirrorDiff(payload []byte) (MirrorDiffFrame, error) {
+	var frame MirrorDiffFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return MirrorDiffFrame{}, fmt.Errorf("invalid mirror diff payload: %w", err)
+	}
+	return frame, nil
+}
+
 // ClientMessage is a decoded frame received from the client.
 type ClientMessage struct {
 	Type    byte
@@ -122,4 +223,55 @@ func ParseResizeArgs(payload []byte) (ResizeArgs, error) {
 		return ResizeArgs{}, fmt.Errorf("%w: invalid resize payload: %v", ErrInvalidMessage, err)
 	}
 	return args, nil
+}
+
+// EncodeRouteFrame wraps a session message with the routing header:
+//
+//	[sessionID (16B)] [type (1B)] [len (2B, big-endian)] [payload]
+//
+// sessionID must be exactly RouteSessionIDLen bytes; an all-zero id is the
+// connection-level marker. Payloads longer than MaxRoutePayload are rejected
+// (terminal frames are chunked well under the limit).
+func EncodeRouteFrame(sessionID []byte, msgType byte, payload []byte) ([]byte, error) {
+	if len(sessionID) != RouteSessionIDLen {
+		return nil, fmt.Errorf("%w: session id must be %d bytes, got %d", ErrInvalidMessage, RouteSessionIDLen, len(sessionID))
+	}
+	if len(payload) > MaxRoutePayload {
+		return nil, fmt.Errorf("%w: payload %d exceeds max %d", ErrInvalidMessage, len(payload), MaxRoutePayload)
+	}
+	frame := make([]byte, RouteHeaderLen+len(payload))
+	copy(frame[:RouteSessionIDLen], sessionID)
+	frame[RouteSessionIDLen] = msgType
+	binary.BigEndian.PutUint16(frame[RouteSessionIDLen+1:], uint16(len(payload)))
+	copy(frame[RouteHeaderLen:], payload)
+	return frame, nil
+}
+
+// DecodeRouteFrame parses a routed frame into its session id and inner
+// message. An error is returned for a frame shorter than the header or whose
+// declared length disagrees with the actual payload.
+func DecodeRouteFrame(frame []byte) (sessionID []byte, msg ClientMessage, err error) {
+	if len(frame) < RouteHeaderLen {
+		return nil, ClientMessage{}, fmt.Errorf("%w: routed frame too short (%d < %d)", ErrInvalidMessage, len(frame), RouteHeaderLen)
+	}
+	sid := make([]byte, RouteSessionIDLen)
+	copy(sid, frame[:RouteSessionIDLen])
+	msgType := frame[RouteSessionIDLen]
+	plen := int(binary.BigEndian.Uint16(frame[RouteSessionIDLen+1 : RouteSessionIDLen+3]))
+	payload := frame[RouteHeaderLen:]
+	if len(payload) != plen {
+		return nil, ClientMessage{}, fmt.Errorf("%w: routed payload length %d != declared %d", ErrInvalidMessage, len(payload), plen)
+	}
+	return sid, ClientMessage{Type: msgType, Payload: payload}, nil
+}
+
+// IsConnectionLevel reports whether a session id is the all-zero connection
+// level marker (heartbeat / RTT probe), i.e. not scoped to any session.
+func IsConnectionLevel(sessionID []byte) bool {
+	for _, b := range sessionID {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }

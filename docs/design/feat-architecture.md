@@ -235,7 +235,7 @@ const (
 ### 5.2 WebSocket
 
 ```
-  WS     /ws?session_id=xxx         附着到已有会话
+  WS     /ws                         WebSocket 单连接多路复用,按路由帧 session_id 附着到会话(见 ws-multiplex.md)
 ```
 
 ### 5.3 请求/响应示例
