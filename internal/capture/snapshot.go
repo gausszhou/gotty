@@ -44,11 +44,32 @@ func cloneGrid(g *Grid) *Grid {
 	return cp
 }
 
+// Grid returns the snapshot's private grid copy, for callers that need
+// per-cell access (text location, monitor row diffing).
+func (s *Snapshot) Grid() *Grid { return s.grid }
+
 // Text renders the snapshot grid as plain text.
 func (s *Snapshot) Text() string { return Text(s.grid) }
+
+// RowTexts returns the plain text of every row, trailing spaces trimmed.
+// Row indices line up with the grid, so a text-level diff yields the rows a
+// monitor must repaint.
+func (s *Snapshot) RowTexts() []string {
+	out := make([]string, s.grid.Rows())
+	for r := range out {
+		out[r] = RowText(s.grid, r)
+	}
+	return out
+}
+
+// RowCells returns the styled cells of one row.
+func (s *Snapshot) RowCells(r int) []CellJSON { return RowCellsJSON(s.grid, r) }
 
 // CellsJSON returns the styled cell list of the snapshot grid.
 func (s *Snapshot) CellsJSON() []CellJSON { return CellsJSON(s.grid) }
 
-// PNG rasterizes the snapshot grid into PNG bytes.
-func (s *Snapshot) PNG() ([]byte, error) { return PNG(s.grid, s.Images, s.CellW, s.CellH) }
+// PNG rasterizes the snapshot grid into PNG bytes; opts select an external
+// font (--font) and the virtual mouse-cursor overlay.
+func (s *Snapshot) PNG(opts ...RenderOption) ([]byte, error) {
+	return PNG(s.grid, s.Images, s.CellW, s.CellH, opts...)
+}

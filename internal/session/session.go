@@ -69,6 +69,15 @@ type AttachOptions struct {
 	Preferences []byte
 }
 
+// CloseReasoner lets a logical channel (a multiplexed WebSocket) report WHY
+// it is being torn down, so the server can send the right event frame
+// (preempted vs destroyed) instead of a generic connection close. A plain
+// io.Closer is still supported for non-multiplexed connections (where the
+// whole connection is the channel).
+type CloseReasoner interface {
+	CloseWithReason(reason byte) error
+}
+
 // Terminal is the capability a session needs from the terminal layer.
 // *terminal.Terminal implements it; tests may plug in stubs.
 type Terminal interface {
@@ -370,7 +379,7 @@ func (s *Session) Signal(sig syscall.Signal) error {
 
 // StateDescription returns the view of the session used by the REST API.
 func (s *Session) StateDescription() StateDescription {
-	return StateDescription{
+	desc := StateDescription{
 		ID:        s.id,
 		State:     s.State().String(),
 		Command:   s.Command(),
@@ -380,6 +389,29 @@ func (s *Session) StateDescription() StateDescription {
 		Title:     s.title,
 		CreatedAt: s.createdAt.Format(time.RFC3339),
 	}
+	// exit code / size are discovered through optional interfaces so test
+	// terminal stubs need not grow new methods (0004 §2.8).
+	if ec, ok := s.term.(interface{ ExitCode() *int }); ok {
+		desc.ExitCode = ec.ExitCode()
+	}
+	desc.Cols, desc.Rows = s.currentSize()
+	return desc
+}
+
+// currentSize returns the current terminal size, falling back to the mirror
+// grid when the PTY size was never set explicitly.
+func (s *Session) currentSize() (int, int) {
+	if sz, ok := s.term.(interface{ Size() (int, int) }); ok {
+		if cols, rows := sz.Size(); cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	s.mirrorMu.Lock()
+	defer s.mirrorMu.Unlock()
+	if sz, ok := s.mirror.(interface{ Size() (int, int) }); ok {
+		return sz.Size()
+	}
+	return 0, 0
 }
 
 // StateDescription is the wire representation of a session.
@@ -392,6 +424,12 @@ type StateDescription struct {
 	Exited    bool     `json:"exited"`
 	Title     string   `json:"title,omitempty"` // 显示名(空 = 自动编号)
 	CreatedAt string   `json:"created_at"`
+	// ExitCode is the process exit status once it has exited (nil while
+	// running, or when the status is unavailable — 0004 §2.8).
+	ExitCode *int `json:"exit_code,omitempty"`
+	// Cols/Rows are the current terminal size.
+	Cols int `json:"cols,omitempty"`
+	Rows int `json:"rows,omitempty"`
 }
 
 // Attach bridges conn with the terminal using the binary protocol and
@@ -419,9 +457,12 @@ func (s *Session) Attach(ctx context.Context, conn io.ReadWriter, opts AttachOpt
 	s.mu.Unlock()
 
 	if old != nil {
-		if closer, ok := old.(io.Closer); ok {
-			// 在锁外关闭旧连接,避免阻塞状态机
-			closer.Close()
+		// 在锁外关闭旧连接,避免阻塞状态机。多路复用通道携带原因
+		// (preempted),普通整连接仍是通用 Close。
+		if cr, ok := old.(CloseReasoner); ok {
+			_ = cr.CloseWithReason(terminal.EventPreempted)
+		} else if closer, ok := old.(io.Closer); ok {
+			_ = closer.Close()
 		}
 	}
 
@@ -475,8 +516,10 @@ func (s *Session) Destroy() error {
 	s.conn = nil
 	s.mu.Unlock()
 
-	if closer, ok := conn.(io.Closer); ok && conn != nil {
-		closer.Close()
+	if cr, ok := conn.(CloseReasoner); ok && conn != nil {
+		_ = cr.CloseWithReason(terminal.EventDestroyed)
+	} else if closer, ok := conn.(io.Closer); ok && conn != nil {
+		_ = closer.Close()
 	}
 
 	return s.term.Close()

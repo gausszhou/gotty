@@ -1,6 +1,6 @@
 # WebSocket 连接复用与二进制路由协议设计
 
-> 状态：设计中（待评审后实现）
+> 状态：已实现（单连接多路复用已落地；前端 `utils/multiplexer.ts` + `utils/session-channel.ts`，后端 `internal/api/ws_handler.go`）
 > 关联：`docs/design/feat-architecture.md` §5.2（WebSocket 附着）、§6（二进制协议）
 
 ## 1. 背景与动机

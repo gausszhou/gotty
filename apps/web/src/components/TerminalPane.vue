@@ -29,7 +29,8 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import Terminal from './Terminal.vue'
-import { openTerminalWS, type TermHandle, type WSWrapper } from '../utils/ws'
+import { type TermHandle, type WSWrapper } from '../utils/ws'
+import { multiplexer } from '../utils/multiplexer'
 import { getSession, createSession } from '../utils/api'
 import { t } from '../utils/i18n'
 import { findManifestEntry, upsertManifest } from '../utils/manifest'
@@ -126,7 +127,7 @@ function attach() {
         }
         logger.info('attach', 'session resolved ok (session=%s)', sid)
 
-        wsWrapper = openTerminalWS(termHandle, sid, {
+        wsWrapper = await multiplexer.attach(sid, termHandle, {
             onConnect: () => {
                 logger.info('attach', 'connected (session=%s)', props.sessionId)
                 connState.value = 'connected'

@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"strings"
 	"time"
 
@@ -131,19 +132,24 @@ func ImagesJSON(images []ImageAsset) []ImageJSON {
 func Text(g *Grid) string {
 	rows := make([]string, 0, g.Rows())
 	for r := 0; r < g.Rows(); r++ {
-		var sb strings.Builder
-		for c := 0; c < g.Cols(); c++ {
-			if rn := g.Cell(r, c).Rune; rn != 0 {
-				sb.WriteRune(rn)
-			}
-		}
-		rows = append(rows, strings.TrimRight(sb.String(), " "))
+		rows = append(rows, RowText(g, r))
 	}
 	end := len(rows)
 	for end > 0 && rows[end-1] == "" {
 		end--
 	}
 	return strings.Join(rows[:end], "\n")
+}
+
+// RowText renders one grid row as plain text with trailing spaces trimmed.
+func RowText(g *Grid, r int) string {
+	var sb strings.Builder
+	for c := 0; c < g.Cols(); c++ {
+		if rn := g.Cell(r, c).Rune; rn != 0 {
+			sb.WriteRune(rn)
+		}
+	}
+	return strings.TrimRight(sb.String(), " ")
 }
 
 // HTML renders the screen grid as styled HTML: one <span> per styled cell,
@@ -194,34 +200,42 @@ func rowHasContent(g *Grid, r int) bool {
 func CellsJSON(g *Grid) []CellJSON {
 	var out []CellJSON
 	for r := 0; r < g.Rows(); r++ {
-		for c := 0; c < g.Cols(); c++ {
-			cell := g.Cell(r, c)
-			if cell.Rune == 0 {
-				continue
-			}
-			if cell.Rune == ' ' && !cellHasStyle(cell) {
-				continue
-			}
-			cj := CellJSON{R: r, C: c, Ch: string(cell.Rune)}
-			if cell.Reverse {
-				cj.Reverse = true
-			}
-			fg, bg, _ := renderedColors(cell)
-			if s := cssColor(fg); s != "" {
-				cj.Fg = &s
-			}
-			if s := cssColor(bg); s != "" {
-				cj.Bg = &s
-			}
-			cj.Bold = cell.Bold
-			cj.Dim = cell.Dim
-			cj.Italic = cell.Italic
-			cj.Underline = cell.Underline
-			cj.Blink = cell.Blink
-			cj.Invisible = cell.Invisible
-			cj.Strikethrough = cell.Strikethrough
-			out = append(out, cj)
+		out = append(out, RowCellsJSON(g, r)...)
+	}
+	return out
+}
+
+// RowCellsJSON returns the styled cells of one row. It powers the monitor's
+// dirty-row frames, which materials only the rows that changed.
+func RowCellsJSON(g *Grid, r int) []CellJSON {
+	var out []CellJSON
+	for c := 0; c < g.Cols(); c++ {
+		cell := g.Cell(r, c)
+		if cell.Rune == 0 {
+			continue
 		}
+		if cell.Rune == ' ' && !cellHasStyle(cell) {
+			continue
+		}
+		cj := CellJSON{R: r, C: c, Ch: string(cell.Rune)}
+		if cell.Reverse {
+			cj.Reverse = true
+		}
+		fg, bg, _ := renderedColors(cell)
+		if s := cssColor(fg); s != "" {
+			cj.Fg = &s
+		}
+		if s := cssColor(bg); s != "" {
+			cj.Bg = &s
+		}
+		cj.Bold = cell.Bold
+		cj.Dim = cell.Dim
+		cj.Italic = cell.Italic
+		cj.Underline = cell.Underline
+		cj.Blink = cell.Blink
+		cj.Invisible = cell.Invisible
+		cj.Strikethrough = cell.Strikethrough
+		out = append(out, cj)
 	}
 	return out
 }
@@ -330,13 +344,58 @@ var (
 	defaultBG = color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
 )
 
+// RenderOptions controls PNG rasterization (0005 §2.2–2.3).
+type RenderOptions struct {
+	// FontPath is a TTF/OTF file used instead of the embedded Go Mono. An
+	// unreadable or unparsable file is a hard error — silently falling back
+	// to the embedded font would hide a typo behind tofu boxes.
+	FontPath string
+	// FontSize is the face size in points; 0 derives it from the cell height.
+	FontSize float64
+	// MouseCursor overlays the synthetic mouse cursor when non-nil.
+	MouseCursor *MouseCursor
+}
+
+// MouseCursor is the virtual mouse position drawn into PNG output
+// (0004 §2.7): idle draws an outlined marker, held fills the cell.
+type MouseCursor struct {
+	Col, Row int
+	Held     bool
+}
+
+// RenderOption customizes PNG rasterization.
+type RenderOption func(*RenderOptions)
+
+// WithFont selects an external font file and size.
+func WithFont(path string, size float64) RenderOption {
+	return func(o *RenderOptions) {
+		o.FontPath = path
+		o.FontSize = size
+	}
+}
+
+// WithMouseCursor overlays the virtual mouse cursor.
+func WithMouseCursor(c *MouseCursor) RenderOption {
+	return func(o *RenderOptions) {
+		o.MouseCursor = c
+	}
+}
+
+// mouseCursorColor is the magenta the virtual cursor is drawn in.
+var mouseCursorColor = color.RGBA{R: 0xff, G: 0x00, B: 0xff, A: 0xff}
+
 // PNG rasterizes the screen grid into PNG bytes: one cellW×cellH block per
-// grid cell, glyphs drawn with an embedded monospace font (Latin coverage;
-// CJK/emoji render as tofu boxes), then graphics-protocol images are
-// composited at their placements. Pixel-perfect text needs the browser
-// engine (M3); this renderer is a faithful-enough bitmap snapshot.
-func PNG(g *Grid, images []ImageAsset, cellW, cellH int) ([]byte, error) {
-	face, err := monoFace(cellH)
+// grid cell, glyphs drawn with the embedded monospace font (Latin coverage;
+// CJK/emoji render as tofu boxes) or an external font (--font), then
+// graphics-protocol images are composited at their placements. Pixel-perfect
+// text needs the browser engine (M3); this renderer is a faithful-enough
+// bitmap snapshot.
+func PNG(g *Grid, images []ImageAsset, cellW, cellH int, opts ...RenderOption) ([]byte, error) {
+	var ro RenderOptions
+	for _, opt := range opts {
+		opt(&ro)
+	}
+	face, err := loadFace(cellH, ro)
 	if err != nil {
 		return nil, err
 	}
@@ -415,6 +474,11 @@ func PNG(g *Grid, images []ImageAsset, cellW, cellH int) ([]byte, error) {
 		draw.ApproxBiLinear.Scale(canvas, dst, a.img, a.img.Bounds(), draw.Over, nil)
 	}
 
+	// 虚拟鼠标光标叠印(0004 §2.7):画在最后,保证不被图片遮住。
+	if ro.MouseCursor != nil {
+		drawMouseCursor(canvas, cellW, cellH, *ro.MouseCursor)
+	}
+
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, canvas); err != nil {
 		return nil, err
@@ -422,13 +486,54 @@ func PNG(g *Grid, images []ImageAsset, cellW, cellH int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// monoFace loads the embedded Go Mono font at a size derived from cellH.
-func monoFace(cellH int) (font.Face, error) {
-	f, err := opentype.Parse(gomono.TTF)
+// drawMouseCursor overlays the synthetic mouse marker: a filled cell while a
+// button is held, an outlined cell otherwise.
+func drawMouseCursor(img *image.RGBA, cellW, cellH int, c MouseCursor) {
+	x0, y0 := c.Col*cellW, c.Row*cellH
+	if x0 < 0 || y0 < 0 || x0+cellW > img.Bounds().Dx() || y0+cellH > img.Bounds().Dy() {
+		return
+	}
+	if c.Held {
+		draw.Draw(img, image.Rect(x0, y0, x0+cellW, y0+cellH),
+			image.NewUniform(mouseCursorColor), image.Point{}, draw.Src)
+		return
+	}
+	thickness := 2
+	for t := 0; t < thickness; t++ {
+		drawLine(img, x0, y0+t, x0+cellW-1, y0+t, mouseCursorColor)
+		drawLine(img, x0, y0+cellH-1-t, x0+cellW-1, y0+cellH-1-t, mouseCursorColor)
+	}
+	for y := y0; y < y0+cellH; y++ {
+		for t := 0; t < thickness; t++ {
+			img.Set(x0+t, y, mouseCursorColor)
+			img.Set(x0+cellW-1-t, y, mouseCursorColor)
+		}
+	}
+}
+
+// loadFace loads the rasterization face: the external font when one was
+// requested (`--font`), otherwise the embedded Go Mono. The size comes from
+// RenderOptions.FontSize, or from the cell height when unset.
+func loadFace(cellH int, o RenderOptions) (font.Face, error) {
+	ttf := gomono.TTF
+	if o.FontPath != "" {
+		data, err := os.ReadFile(o.FontPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read font `%s`: %w", o.FontPath, err)
+		}
+		ttf = data
+	}
+	f, err := opentype.Parse(ttf)
 	if err != nil {
+		if o.FontPath != "" {
+			return nil, fmt.Errorf("failed to parse font `%s`: %w", o.FontPath, err)
+		}
 		return nil, err
 	}
-	size := float64(cellH - 4)
+	size := o.FontSize
+	if size <= 0 {
+		size = float64(cellH - 4)
+	}
 	if size < 6 {
 		size = 6
 	}

@@ -104,3 +104,89 @@ func TestParseResizeArgs(t *testing.T) {
 		t.Fatal("expected error for invalid JSON")
 	}
 }
+
+func TestRouteFrameRoundTrip(t *testing.T) {
+	sid := []byte("a00000000000000a") // 16 base36 chars
+	payload := []byte("hello terminal")
+
+	frame, err := EncodeRouteFrame(sid, Output, payload)
+	if err != nil {
+		t.Fatalf("EncodeRouteFrame: %s", err)
+	}
+	// header = 16 (sid) + 1 (type) + 2 (len) = 19
+	if len(frame) != RouteHeaderLen+len(payload) {
+		t.Fatalf("frame length %d, want %d", len(frame), RouteHeaderLen+len(payload))
+	}
+
+	gotSID, msg, err := DecodeRouteFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeRouteFrame: %s", err)
+	}
+	if !bytes.Equal(gotSID, sid) {
+		t.Fatalf("sid = %q, want %q", gotSID, sid)
+	}
+	if msg.Type != Output {
+		t.Fatalf("type = %c, want %c", msg.Type, Output)
+	}
+	if !bytes.Equal(msg.Payload, payload) {
+		t.Fatalf("payload = %q, want %q", msg.Payload, payload)
+	}
+}
+
+func TestRouteFrameConnectionLevel(t *testing.T) {
+	zero := make([]byte, RouteSessionIDLen)
+	if !IsConnectionLevel(zero) {
+		t.Fatal("all-zero id must be connection-level")
+	}
+	if IsConnectionLevel([]byte("a00000000000000a")) {
+		t.Fatal("a real session id must not be connection-level")
+	}
+
+	frame, err := EncodeRouteFrame(zero, Ping, nil)
+	if err != nil {
+		t.Fatalf("EncodeRouteFrame conn-level: %s", err)
+	}
+	gotSID, msg, err := DecodeRouteFrame(frame)
+	if err != nil {
+		t.Fatalf("DecodeRouteFrame conn-level: %s", err)
+	}
+	if !IsConnectionLevel(gotSID) {
+		t.Fatal("decoded sid must round-trip as connection-level")
+	}
+	if msg.Type != Ping {
+		t.Fatalf("type = %c, want %c", msg.Type, Ping)
+	}
+}
+
+func TestRouteFrameLengthMismatch(t *testing.T) {
+	sid := []byte("a00000000000000a")
+	good, _ := EncodeRouteFrame(sid, Output, []byte("abc"))
+	bad := make([]byte, len(good))
+	copy(bad, good)
+	// 篡改声明长度(实际 payload 为 3 字节),解码必须报错
+	bad[RouteSessionIDLen+1] = 0
+	bad[RouteSessionIDLen+2] = 99
+	if _, _, err := DecodeRouteFrame(bad); err == nil {
+		t.Fatal("expected length-mismatch error")
+	}
+}
+
+func TestRouteFrameTooShort(t *testing.T) {
+	if _, _, err := DecodeRouteFrame([]byte{1, 2, 3}); err == nil {
+		t.Fatal("expected too-short error")
+	}
+}
+
+func TestEncodeRouteFrameBadSID(t *testing.T) {
+	if _, err := EncodeRouteFrame([]byte("short"), Output, nil); err == nil {
+		t.Fatal("expected bad-session-id error")
+	}
+}
+
+func TestEncodeRouteFramePayloadTooLarge(t *testing.T) {
+	sid := make([]byte, RouteSessionIDLen)
+	big := make([]byte, MaxRoutePayload+1)
+	if _, err := EncodeRouteFrame(sid, Output, big); err == nil {
+		t.Fatal("expected payload-too-large error")
+	}
+}

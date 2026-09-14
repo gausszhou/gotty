@@ -209,7 +209,8 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
   无空态卡、无 2s 轮询——headless 全新 profile 无影响，M4 attached 模式在真人
   浏览器打开也不污染用户设备清单。
 - **行为**：mount → `getSession(sid)` 确认存活 → 创建 xterm（固定 cols/rows 来自
-  query；未传则 fit 后发 resize）→ 复用 `openTerminalWS` 附着（`Terminal.vue` 的
+  query；未传则 fit 后发 resize）→ 复用全局 `multiplexer.attach(sid)` 附着
+  （单连接多路复用，见 ws-multiplex.md；`Terminal.vue` 的
   expose 即 `TermHandle`，组件不动）。
 - **就绪握手**：`ws.ts` 的 `WSHooks` 加可选 `onReady`（收到 `MSG_REPLAY_DONE` 时
   回调，~3 行）；CaptureView 置 `window.__gottyCaptureReady = true`；失败路径置
