@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"syscall"
@@ -218,7 +218,13 @@ func buildEnv(command string, extra []string) []string {
 // injection entirely for the default Git Bash session on Windows (the default
 // command is $SHELL, an absolute Windows path).
 func isBash(command string) bool {
-	base := strings.ToLower(filepath.Base(command))
+	// 统一分隔符再取 basename:Windows 的默认命令是反斜杠绝对路径
+	// (D:\...\Git\usr\bin\bash.exe),宿主是 Linux/macOS 时 filepath.Base
+	// 不认反斜杠,整串路径都变成 base → 误判为非 bash,PROMPT_COMMAND
+	// 注入被静默跳过(CI 在 Linux 上跑同一测试集就会复现)。先转成斜杠,
+	// 让识别只依赖命令串本身,与宿主平台无关。
+	normalized := strings.ReplaceAll(command, `\`, "/")
+	base := strings.ToLower(path.Base(normalized))
 	return base == "bash" || base == "bash.exe"
 }
 
