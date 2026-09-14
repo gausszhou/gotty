@@ -39,4 +39,11 @@ func init() {
 	rootCmd.AddCommand(buildCaptureCmd())
 	rootCmd.AddCommand(buildVersionCmd())
 	rootCmd.AddCommand(buildSelfUpdateCmd())
+	rootCmd.AddCommand(buildUsageCmd())
+
+	// Agent-facing commands (0004 §2.6): registered both at the top level
+	// (`gotty screen …`) and under `gotty agent …`, so scripts can use the
+	// short form and the grouped form stays discoverable in --help.
+	rootCmd.AddCommand(buildAgentCommands()...)
+	rootCmd.AddCommand(buildAgentGroupCmd())
 }
