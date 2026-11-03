@@ -109,6 +109,8 @@ const termHandle: TermHandle = {
     onInput: (cb) => terminalRef.value!.onInput(cb),
     onResize: (cb) => terminalRef.value!.onResize(cb),
     onWriteParsed: (cb) => terminalRef.value!.onWriteParsed(cb),
+    // attached 截图引擎:把终端视图合成为 PNG(见 Terminal.vue capture)。
+    capture: () => terminalRef.value!.capture(),
 }
 
 function attach() {

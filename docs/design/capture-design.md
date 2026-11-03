@@ -312,6 +312,11 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 - **前端**：`WebglAddon(true)`（恢复 preserveDrawingBuffer，否则 drawImage 拿到
   空白缓冲）+ 把 `.terminal` 下所有 canvas 按 DOM 顺序合成到离屏画布，暴露
   `capture()`；`session-channel.ts` 处理 CaptureRequest 并按 24000 字符分片回传。
+  **DOM 渲染器下 `capture()` 返回 null**（文字是 DOM 节点而非 canvas，合成出来
+  只有背景色）——服务端回 502 并说明原因，而不是给一张空白图。截图页
+  （`/capture/:sid`）默认用 DOM 渲染器，需要 attached 时加 `?webgl=1`。
+- **尺寸**：attached 截的是"真人浏览器当前视口"，PNG 尺寸由页面决定（不是
+  `cols×9 × rows×18`）；返回体里的 `cols/rows` 来自客户端回报的终端几何。
 - **驱动**：`gotty capture --engine attached --session-id xxx [--wait-ms]
   [--keys Escape,Enter]`。`--keys` 在截图前经 `POST /keys` 发按键，让"点开菜单
   再截图"这类交互可复现。

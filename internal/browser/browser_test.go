@@ -8,17 +8,23 @@ package browser
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/gif"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 
 	"github.com/gausszhou/gotty/internal/capture"
 )
@@ -293,4 +299,130 @@ func gifFrameRGBA(p *image.Paletted) *image.RGBA {
 	dst := image.NewRGBA(b)
 	draw.Draw(dst, b, p, b.Min, draw.Src)
 	return dst
+}
+
+// TestBrowserEngineAttachedCapture 覆盖 M4 全链路:真实浏览器附着到会话后,
+// 服务端 POST /capture 发 CaptureRequest,页面把 canvas 合成为 PNG 回传。
+// 这条用例同时验证前端合成(WebGL canvas → 离屏 canvas)与服务端分片装配。
+func TestBrowserEngineAttachedCapture(t *testing.T) {
+	chrome := findChrome()
+	if chrome == "" {
+		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
+	}
+	base := newBrowserTestServer(t)
+	sid := attachedTestSession(t, base)
+
+	// 用真实浏览器打开 capture 页:它会附着到会话(与真人浏览器同一路径)。
+	// headless Chrome 默认没有 GPU:用 SwiftShader 软件渲染才有 WebGL,
+	// 否则页面回退 DOM 渲染器、合成不出文字(attached 引擎会明确报错)。
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chrome),
+		chromedp.Flag("enable-unsafe-swiftshader", true),
+		chromedp.Flag("use-gl", "angle"),
+		chromedp.Flag("use-angle", "swiftshader"),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	defer cancelAlloc()
+	pageCtx, cancelPage := chromedp.NewContext(allocCtx)
+	defer cancelPage()
+
+	// webgl=1:截图页默认 DOM 渲染器;attached 合成必须走 WebGL canvas。
+	url := fmt.Sprintf("%s/#/capture/%s?cols=80&rows=24&webgl=1", base, sid)
+	if err := chromedp.Run(pageCtx, chromedp.Navigate(url)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var ready bool
+		if err := chromedp.Run(pageCtx, chromedp.Evaluate(`window.__gottyCaptureReady === true`, &ready)); err != nil {
+			t.Fatalf("evaluate ready: %v", err)
+		}
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("capture page did not become ready")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// 等一帧渲染完成,避免截到空白首帧。
+	time.Sleep(300 * time.Millisecond)
+
+	resp, err := http.Post(base+"/api/sessions/"+sid+"/capture", "application/json",
+		strings.NewReader(`{"timeout_ms":15000}`))
+	if err != nil {
+		t.Fatalf("capture request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("capture status = %d, want 200 (%s)", resp.StatusCode, buf.String())
+	}
+
+	var out struct {
+		PNG  string `json:"png"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode capture response: %v", err)
+	}
+	pngBytes, err := base64.StdEncoding.DecodeString(out.PNG)
+	if err != nil {
+		t.Fatalf("decode base64 png: %v", err)
+	}
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	// attached 截的是"真人浏览器当前视口",尺寸由页面决定,不是 cols×cell;
+	// 几何信息以客户端回报的 cols/rows 为准。
+	if out.Cols != 80 || out.Rows != 24 {
+		t.Errorf("reported geometry = %dx%d, want 80x24", out.Cols, out.Rows)
+	}
+	if img.Bounds().Dx() < 100 || img.Bounds().Dy() < 100 {
+		t.Errorf("png size = %v, want a real terminal viewport", img.Bounds())
+	}
+	// 非空白:终端里至少有背景色与文字色两种像素。
+	colors := map[uint32]struct{}{}
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y += 3 {
+		for x := b.Min.X; x < b.Max.X; x += 3 {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			colors[uint32(r>>8)<<16|uint32(g>>8)<<8|uint32(bl>>8)] = struct{}{}
+		}
+	}
+	if len(colors) < 2 {
+		t.Errorf("captured image has %d distinct colors, want >= 2 (blank composite?)", len(colors))
+	}
+}
+
+// attachedTestSession creates a long-running session and returns its id.
+func attachedTestSession(t *testing.T, base string) string {
+	t.Helper()
+	body := `{"command":"sh","args":["-c","printf 'ATTACHED-OK\n'; sleep 60"],"width":80,"height":24}`
+	resp, err := http.Post(base+"/api/sessions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("create session = %d (%s)", resp.StatusCode, buf.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	t.Cleanup(func() {
+		req, _ := http.NewRequest(http.MethodDelete, base+"/api/sessions/"+created.ID, nil)
+		if r, err := http.DefaultClient.Do(req); err == nil {
+			r.Body.Close()
+		}
+	})
+	return created.ID
 }

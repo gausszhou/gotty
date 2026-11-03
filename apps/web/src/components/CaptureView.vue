@@ -4,7 +4,7 @@
   <div class="capture-page">
     <div v-if="!ready && !error" class="capture-loading">rendering…</div>
     <div v-if="error" class="capture-error">{{ error }}</div>
-    <Terminal ref="terminalRef" :dom-renderer="true" class="capture-terminal" @title="(t) => (title = t)" />
+    <Terminal ref="terminalRef" :dom-renderer="!webgl" class="capture-terminal" @title="(t) => (title = t)" />
   </div>
 </template>
 
@@ -28,6 +28,10 @@ declare global {
 }
 
 const route = useRoute()
+// webgl:截图页默认用 DOM 渲染器(headless 截图更确定);attached 引擎需要
+// 从 canvas 取像素,加 `?webgl=1` 打开 WebGL 渲染器 —— 否则页面无法合成,
+// 服务端会明确报 "no WebGL canvas"。
+const webgl = route.query.webgl === '1' 
 const terminalRef = ref<InstanceType<typeof Terminal> | null>(null)
 const ready = ref(false)
 const error = ref('')
@@ -83,6 +87,8 @@ onMounted(async () => {
         onInput: () => {},
         onResize: () => {},
         onWriteParsed: (cb) => terminalRef.value?.onWriteParsed(cb),
+        // attached 截图引擎(`?webgl=1` 时可用):合成终端视图。
+        capture: () => terminalRef.value?.capture() ?? null,
     }
 
     const ws = await multiplexer.attach(sid, handle, {

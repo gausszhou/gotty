@@ -35,6 +35,9 @@ const FONT_FAMILY_FALLBACK =
 const FONT_SIZE_FALLBACK = 14
 
 const terminalEl = ref<HTMLElement>()
+// webglActive 记录 WebGL 渲染器是否真的加载成功:attached 截图只能从 canvas
+// 取像素,DOM 渲染器下必须拒绝而不是回传空白图。
+let webglActive = false
 let term: XTerminal
 let fitAddon: FitAddon
 let resizeHandler: () => void
@@ -130,6 +133,7 @@ onMounted(() => {
   if (!props.domRenderer) {
     try {
       term.loadAddon(new WebglAddon(true))
+      webglActive = true
     } catch {
       // 回退 DOM 渲染器即可,无需处理
     }
@@ -260,6 +264,9 @@ function close() {
 function capture(): string | null {
   const root = terminalEl.value
   if (!root) return null
+  // DOM 渲染器的文字是 DOM 节点而不是 canvas,合成出来只有背景色 ——
+  // 返回 null 让服务端报错,好过给用户一张空白图。
+  if (!webglActive) return null
   const rect = root.getBoundingClientRect()
   const width = Math.max(1, Math.round(rect.width))
   const height = Math.max(1, Math.round(rect.height))

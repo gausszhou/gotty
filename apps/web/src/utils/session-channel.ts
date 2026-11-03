@@ -219,7 +219,11 @@ class SessionChannel {
             logger.warn('mux', 'capture failed (sid=%s): %s', this.sid, String(e))
         }
         if (!png) {
-            this.mux.send(this.sid, MSG_CAPTURE_RESULT, JSON.stringify({ error: 'capture unavailable' }))
+            this.mux.send(
+                this.sid,
+                MSG_CAPTURE_RESULT,
+                JSON.stringify({ error: 'capture unavailable (no WebGL canvas; DOM renderer cannot be composited)' }),
+            )
             return
         }
         const { columns, rows } = this.term.info()
