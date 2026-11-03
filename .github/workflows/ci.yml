@@ -49,5 +49,11 @@ jobs:
       - name: Test
         run: make test
 
+      # The gotty-tui-test skill is executable documentation: extract its
+      # harness template from SKILL.md and run it against a fixture TUI,
+      # including the failure path (a test that cannot fail is not a test).
+      - name: Skill smoke (gotty run + gotty-tui-test)
+        run: bash scripts/e2e/skill-smoke.sh ./build/gotty
+
       - name: Verify binary runs
         run: ./build/gotty --version

@@ -40,6 +40,7 @@ func init() {
 	rootCmd.AddCommand(buildVersionCmd())
 	rootCmd.AddCommand(buildSelfUpdateCmd())
 	rootCmd.AddCommand(buildUsageCmd())
+	rootCmd.AddCommand(buildSkillCmd())
 
 	// Agent-facing commands (0004 §2.6): registered both at the top level
 	// (`gotty screen …`) and under `gotty agent …`, so scripts can use the

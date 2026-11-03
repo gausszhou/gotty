@@ -20,7 +20,7 @@ gotty usage                         # <1000-token cheat sheet — read this firs
 Quick loop:
 
 ```sh
-ID=<session id>
+ID=$(gotty run --width 120 --height 40 -- top)  # create, remember the id
 gotty screen --session "$ID"                    # read
 gotty press Escape : w q Enter --session "$ID"  # named keys
 gotty wait --regex 'Total: [0-9]+' --session "$ID"
@@ -37,10 +37,15 @@ Rules of thumb:
   coordinates — it survives layout changes.
 - **`--session` is required.** The server keeps no session list (the client's
   localStorage manifest is the source of truth), so there is no way to
-  discover or default to a session.
+  discover or default to a session. Create one with `gotty run`, which prints
+  the id and nothing else.
 - **Machine-readable output**: stdout that is not a TTY (or `--json`) emits
   one line of JSON per result. Pipe into `jq`.
-- `wait` times out (5s by default) rather than hanging; check `timed_out`.
+- `wait` times out (5s by default) rather than hanging; the exit code is still
+  0, so gate on `--format json | jq -e '.matched'` (or `.quiet`).
+- **Testing a TUI**: the `gotty-tui-test` skill (`skills/gotty-tui-test/SKILL.md`,
+  install with `gotty skill --install <dir>`) carries the harness; its template
+  is executed by `scripts/e2e/skill-smoke.sh` in CI.
 
 ## Working on the code
 
@@ -55,13 +60,14 @@ Layout:
 
 | Path | Role |
 |---|---|
-| `cmd/` | CLI (`serve`, `capture`, agent subcommands, `usage`) |
+| `cmd/` | CLI (`serve`, `run`, `capture`, agent subcommands, `usage`, `skill`) |
+| `skills/` | embedded agent skill(s) — `gotty-tui-test` |
 | `internal/terminal/` | PTY process + wire protocol frames |
 | `internal/session/` | sessions, attach/preempt, ring replay, mirror plumbing |
 | `internal/capture/` | VT emulator wrapper, rendering (text/HTML/PNG), mouse, locate |
 | `internal/keys/` | key name → bytes |
 | `internal/api/` | HTTP + WebSocket server, REST handlers |
-| `docs/feat/` | feature specs (0001–0007) with implementation status |
+| `docs/feat/` | feature specs (0001–0008) with implementation status |
 | `docs/design/` | design notes |
 
 Conventions worth knowing:

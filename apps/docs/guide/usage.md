@@ -55,6 +55,10 @@ curl -X POST localhost:9049/api/sessions -d '{"command": "top"}'   # 显式命�
 | `-w, --permit-write` | 允许浏览器向终端写输入（**默认 true**，谨慎） |
 | `--reconnect` | 启用客户端断线重连（`--reconnect-time` 控制间隔, 默认 10） |
 | `--max-session` | 最大并发会话数（默认 0 = 不限） |
+| `--mirror` | 为每个会话保留屏幕镜像（agent 读屏；默认 true，关闭后 `screen`/`wait` 返回 503） |
+| `--answer-queries` | 无浏览器客户端时由镜像应答终端查询（默认 true） |
+| `--scrollback` | 每个会话镜像保留的历史行数（默认 1000，0 = 关闭） |
+| `--font` / `--font-size` | native PNG 栅格化使用的 TTF/OTF 与字号（空 = 内嵌 Go Mono） |
 | `--timeout` | 空闲会话销毁超时秒数（0 = 禁用） |
 | `--session-file` | 会话记录持久化文件（默认 `~/.gotty/sessions.json`，空 = 关闭） |
 | `--title-file` | 页面标题持久化文件（默认 `~/.gotty/title.json`，空 = 仅内存） |
@@ -64,6 +68,7 @@ curl -X POST localhost:9049/api/sessions -d '{"command": "top"}'   # 显式命�
 | `--term` | 会话 PTY 的 TERM 值（默认 `xterm-256color`） |
 | `--close-signal` | 关闭会话时发送给进程的信号（默认 SIGHUP） |
 | `--log-file` | 服务端日志落盘路径（默认 `~/.gotty/logs/gotty.log`，追加；空值仅控制台） |
+| `--log-max-size` / `--log-max-backups` | 日志轮转阈值（MiB）与保留份数 |
 | `--close-timeout` | 发信号后强制 kill 的等待秒数（-1 = 禁用） |
 
 默认即可写（`--permit-write` 默认为 true）；只想让浏览器只看不写，
@@ -104,12 +109,14 @@ POST   /api/sessions               创建会话（可携带客户端 id → 幂�
 POST   /api/sessions/status        批量查询清单 id 的存活状态 {"ids":[...]}
 GET    /api/sessions/:id           查看会话详情
 PUT    /api/sessions/:id/title     设置显示名（持久化到记录）
-DELETE /api/sessions/:id           销毁会话
+DELETE /api/sessions/:id           销毁会话（`gotty kill`）
 POST   /api/sessions/:id/resize    调整终端尺寸
 POST   /api/sessions/:id/signal    发送信号（SIGINT/SIGTERM/SIGKILL/SIGHUP/SIGQUIT）
-GET    /api/sessions/:id/screen    读取当前屏幕（?format=text|json|png，Agent 驱动）
+GET    /api/sessions/:id/screen    读取当前屏幕（?format=text|json|png；?part=scrollback&lines=N 读历史）
 POST   /api/sessions/:id/wait      等待屏幕状态（{"regex": "...", "timeout_ms": 30000, "quiet_ms": 0}）
-POST   /api/sessions/:id/keys      向 PTY 注入输入（{"input": "...", "encoding": "text|base64"}）
+POST   /api/sessions/:id/keys      注入输入（{"input": "..."} | {"keys": [...]} | {"paste": "..."}）
+POST   /api/sessions/:id/mouse     鼠标事件（click/drag/scroll，支持 on_text 语义定位）
+GET    /api/sessions/:id/mouse     鼠标与括号粘贴模式状态
 GET    /api/title                  部署级页面标题（浏览器标签页；空 = 未设置）
 PUT    /api/title                  设置页面标题 {"title": "..."}（持久化）
 ```
@@ -121,22 +128,39 @@ id 记录（存活幂等、有记录则复活——用记录的 command/args 重
 curl -X POST localhost:9049/api/sessions -d '{"command": "top", "width": 120, "height": 40}'
 ```
 
-浏览器通过 `WS /ws?session_id=xxx`（子协议 `webtty`）附着到会话，收发二进制帧。
+浏览器通过单条多路复用连接 `WS /ws`（子协议 `webtty`）附着到会话，
+二进制路由帧里携带会话 id；只读观察用 `WS /ws?session_id=<id>&mode=mirror`。
 
-### Agent 驱动（screen / wait / keys）
+### Agent 驱动（CLI 与 REST）
 
-`screen` / `wait` / `keys` 让脚本或 AI agent 无头驱动运行中的会话：
-读屏、等待正则或输出静默、注入输入，全程不需要浏览器。由默认开启的
-**屏幕镜像**支撑（`--mirror=false` 关闭后 `screen`/`wait` 返回 503）；
-无浏览器客户端时镜像还会应答终端查询（DA/DSR/DECRQM），vim 等全屏程序
-无头启动不会挂起。`keys` 遵循 `--permit-write`，只读部署下返回 403。
+`gotty` 自带一组薄封装命令，全部可以用 `--server` / `--session` 指向远端；
+服务端不保存会话清单，所以先建会话并记住 id：
 
 ```bash
-curl -X POST localhost:9049/api/sessions -d '{"command": "vim", "args": ["-u", "NONE"]}'
-curl -X POST localhost:9049/api/sessions/<id>/keys -d '{"input": ":q!\r"}'
-curl -X POST localhost:9049/api/sessions/<id>/wait -d '{"regex": "VIM", "timeout_ms": 5000}'
-curl "localhost:9049/api/sessions/<id>/screen?format=text"
+ID=$(gotty run --width 120 --height 40 -- vim -u NONE)
+gotty screen --session "$ID"
+gotty press Escape : q ! Enter --session "$ID"
+gotty kill --session "$ID"
 ```
+
+读屏 / 等待 / 输入 / 鼠标 / 历史 / 只读观察：
+
+```bash
+gotty wait --regex 'VIM' --timeout-ms 5000 --session "$ID"
+gotty mouse click --on-text OK --session "$ID"
+gotty paste "$(cat patch.diff)" --session "$ID"
+gotty scrollback --lines 200 --session "$ID"
+gotty monitor --fps 10 --session "$ID"
+```
+
+`gotty usage` 是给 LLM 的精简速查表；`--permit-write=false` 会让输入类命令
+返回 403，`--mirror=false` 会让读屏类命令返回 503。写 TUI 验收测试时安装 skill：
+
+```bash
+gotty skill --install ~/.agents/skills/gotty-tui-test
+```
+
+REST 等价入口：`POST /api/sessions`、`/keys`、`/wait`、`/mouse`、`/screen`。
 
 ## Gotty capture — 端到端终端测试
 

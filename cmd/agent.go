@@ -39,6 +39,8 @@ import (
 // group — so both spellings work.
 func buildAgentCommands() []*cobra.Command {
 	return []*cobra.Command{
+		buildAgentRunCmd(),
+		buildAgentKillCmd(),
 		buildAgentScreenCmd(),
 		buildAgentScrollbackCmd(),
 		buildAgentWaitCmd(),

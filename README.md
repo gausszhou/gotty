@@ -158,6 +158,27 @@ in the stream, or on `--timeout` (default 30 s; the screen is returned
 with `timed_out` set). Use `--` before the command and `sh -c "..."` for
 shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-design.md).
 
+## `gotty run` — create a session for agents and tests
+
+```sh
+ID=$(gotty run --width 120 --height 40 -- ./my-tui)
+gotty screen --session "$ID"
+gotty press q --session "$ID"
+```
+
+Prints the session id and nothing else, so command substitution works;
+`--json` prints the full session record instead. It mirrors
+`POST /api/sessions` (per-session `--env/--cwd/--term/--scrollback`,
+idempotent `--id`) and is the starting point for every other agent command.
+
+Testing a TUI? Install the `gotty-tui-test` skill — a runnable shell/jq
+harness (isolated server on `--port 0`, `wait` + assertions, failure
+evidence, cleanup) that an agent follows end to end:
+
+```sh
+gotty skill --install ~/.agents/skills/gotty-tui-test   # or ~/.claude/skills/…
+```
+
 # Options
 
 ```
@@ -170,6 +191,9 @@ shell syntax. Full design: [docs/design/capture-design.md](docs/design/capture-d
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
     --mirror                Keep a screen mirror per session for the agent API (screen/wait; default: true) [$GOTTY_MIRROR]
     --answer-queries        Answer terminal queries when no browser client is attached (default: true) [$GOTTY_ANSWER_QUERIES]
+    --scrollback int        Scrollback lines kept per session mirror (default: 1000, 0 disables) [$GOTTY_SCROLLBACK]
+    --font string           TTF/OTF font file for native PNG rasterization (empty = embedded Go Mono) [$GOTTY_FONT]
+    --font-size int         Font size in points for native PNG rasterization (0 = derive from cell height) [$GOTTY_FONT_SIZE]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]

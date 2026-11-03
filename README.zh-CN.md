@@ -124,6 +124,25 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 `sh -c "..."`。图形协议图片(kitty/sixel/iTerm2)与像素级浏览器渲染
 计划在后续里程碑实现——见 [docs/design/capture-design.md](docs/design/capture-design.md)。
 
+## `gotty run` — 给 agent 与测试建会话
+
+```sh
+ID=$(gotty run --width 120 --height 40 -- ./my-tui)
+gotty screen --session "$ID"
+gotty press q --session "$ID"
+```
+
+stdout 只有会话 id(命令替换直接可用);`--json` 改为完整会话记录。
+它就是 `POST /api/sessions` 的薄封装,支持会话级
+`--env/--cwd/--term/--scrollback` 与幂等 `--id`,是其余 agent 命令的起点。
+
+要测 TUI?安装 `gotty-tui-test` skill——一份可执行的 shell/jq 骨架
+(隔离服务走 `--port 0`、`wait` + 断言、失败取证、清理),agent 可以照着做:
+
+```sh
+gotty skill --install ~/.agents/skills/gotty-tui-test   # 或 ~/.claude/skills/…
+```
+
 # 选项
 
 ```
@@ -135,6 +154,10 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
     --reconnect-time int    Time to reconnect (default: 10) [$GOTTY_RECONNECT_TIME]
     --max-session int       Maximum number of concurrent sessions (default: 0 = unlimited) [$GOTTY_MAX_SESSION]
     --mirror                Keep a screen mirror per session for the agent API (screen/wait; default: true) [$GOTTY_MIRROR]
+    --answer-queries        Answer terminal queries when no browser client is attached (default: true) [$GOTTY_ANSWER_QUERIES]
+    --scrollback int        Scrollback lines kept per session mirror (default: 1000, 0 disables) [$GOTTY_SCROLLBACK]
+    --font string           TTF/OTF font file for native PNG rasterization (empty = embedded Go Mono) [$GOTTY_FONT]
+    --font-size int         Font size in points for native PNG rasterization (0 = derive from cell height) [$GOTTY_FONT_SIZE]
     --timeout int           Idle timeout seconds for destroying unattached sessions (default: 900, 0 = disabled) [$GOTTY_TIMEOUT]
     --session-file string   File path to persist session records (default: "~/.gotty/sessions.json", empty = disabled) [$GOTTY_SESSION_FILE]
     --title-file string     File path to persist the page title (default: "~/.gotty/title.json", empty = memory only) [$GOTTY_TITLE_FILE]

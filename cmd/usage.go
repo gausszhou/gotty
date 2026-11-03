@@ -31,6 +31,7 @@ const agentUsageText = `gotty — agent cheat sheet (see AGENTS.md for the full 
 
 SETUP
   gotty serve --permit-write            # start the server (default :9049)
+  ID=$(gotty run -- ./your-tui)         # create a session, print its id
   Every command below needs a session id: --session $ID (or $GOTTY_SESSION).
   Point at another host with --server URL (or $GOTTY_SERVER).
   Output: human text on a TTY, ONE line of JSON otherwise or with --json.
@@ -57,6 +58,7 @@ WRITE
   gotty cursor --session $ID                      # mouse-mode state
   gotty resize --cols 120 --rows 40 --session $ID
   gotty signal SIGINT --session $ID
+  gotty kill --session $ID                        # destroy: stop process + drop session
 
 KEYS  (full table: gotty press --help, or internal/keys)
   enter tab escape backspace space  up down left right
