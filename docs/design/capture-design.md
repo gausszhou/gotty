@@ -80,7 +80,8 @@ Playwright 类比：
 ```
 gotty capture [flags] [--] <command> [args...]
   --engine string       渲染引擎: native|browser|attached(默认 native)
-  --format string       结果格式: text|json|html|png(默认 text);
+  --format string       结果格式: text|json|html|png(默认 text;
+                        browser/attached 未显式指定时默认 png);
                         browser 额外支持 gif(动画截图)
   --cols int            终端列数(默认 120)
   --rows int            终端行数(默认 30)

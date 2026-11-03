@@ -67,6 +67,12 @@ func buildCaptureCmd() *cobra.Command {
 			"      'for i in 1 2 3 4 5; do printf \"\\rprogress %d/5\" $i; sleep 0.2; done'",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// browser/attached 只出图:未显式指定 --format 时默认 png(而不是
+			// text),否则 `gotty capture --engine attached --session-id X`
+			// 会因为默认的 text 直接报错。
+			if (engine == "browser" || engine == "attached") && !cmd.Flags().Changed("format") {
+				format = "png"
+			}
 			switch engine {
 			case "", "native":
 				return runCaptureNative(format, args, captureOptions{
