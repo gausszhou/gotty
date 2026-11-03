@@ -44,6 +44,10 @@ func buildCaptureCmd() *cobra.Command {
 		sessionID   string
 		serverURL   string
 		keysBefore  []string
+		gifFPS      int
+		gifDuration time.Duration
+		gifMaxFrame int
+		gifOptimize bool
 	)
 
 	cmd := &cobra.Command{
@@ -58,7 +62,9 @@ func buildCaptureCmd() *cobra.Command {
 			"  gotty capture --format html --out out.html -- \\\n" +
 			"      'printf \\033[31mRED\\033[0m'\n" +
 			"  gotty capture --engine browser --format png --out shot.png -- htop\n" +
-			"  gotty capture --engine attached --session-id $ID --out shot.png",
+			"  gotty capture --engine attached --session-id $ID --out shot.png\n" +
+			"  gotty capture --engine browser --format gif --out anim.gif -- \\\n" +
+			"      'for i in 1 2 3 4 5; do printf \"\\rprogress %d/5\" $i; sleep 0.2; done'",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch engine {
@@ -69,8 +75,8 @@ func buildCaptureCmd() *cobra.Command {
 					noCells: noCells, outPath: outPath,
 				})
 			case "browser":
-				if format != "png" {
-					return fmt.Errorf("engine browser renders --format png only; use --engine native for text/json/html")
+				if format != "png" && format != "gif" {
+					return fmt.Errorf("engine browser renders --format png|gif only; use --engine native for text/json/html")
 				}
 				if sessionID == "" && len(args) == 0 {
 					return fmt.Errorf("no command given: `gotty capture --engine browser -- <command>` or pass --session-id")
@@ -90,12 +96,20 @@ func buildCaptureCmd() *cobra.Command {
 					Timeout:     timeout,
 					Marker:      marker,
 					BrowserPath: browserPath,
+					GIF:         gifOptions(format, gifFPS, gifDuration, gifMaxFrame, gifOptimize),
 				})
 				if err != nil {
 					return err
 				}
 				log.Printf("capture(browser): session=%s reason=%s duration=%v", res.SessionID, res.StopReason, res.Duration)
-				return writeCaptureBytes(outPath, res.PNG)
+				if format == "gif" {
+					var buf bytes.Buffer
+					if err := capture.EncodeGIF(&buf, res.Frames, res.GIFEnd, gifOptimize); err != nil {
+						return err // 已含上下文(静态画面/空缓冲/io 错误)
+					}
+					return writeCaptureBytes(outPath, "gif", buf.Bytes())
+				}
+				return writeCaptureBytes(outPath, "png", res.PNG)
 			case "attached":
 				if format != "png" {
 					return fmt.Errorf("engine attached renders --format png only")
@@ -111,7 +125,7 @@ func buildCaptureCmd() *cobra.Command {
 
 	flags := cmd.Flags()
 	flags.StringVar(&engine, "engine", "native", "rendering engine: native | browser | attached (browser needs Chrome/Chromium; attached asks an already-attached browser)")
-	flags.StringVar(&format, "format", "text", "result format: text | json | html | png")
+	flags.StringVar(&format, "format", "text", "result format: text | json | html | png (native); png | gif (browser)")
 	flags.IntVar(&cols, "cols", 120, "terminal columns")
 	flags.IntVar(&rows, "rows", 30, "terminal rows")
 	flags.IntVar(&cellW, "cell-w", 9, "cell width in pixels (native png rendering / image placement)")
@@ -125,8 +139,25 @@ func buildCaptureCmd() *cobra.Command {
 	flags.StringVar(&sessionID, "session-id", "", "engine browser/attached: session to capture instead of creating one")
 	flags.StringVar(&serverURL, "server", "", "engine attached: GoTTY server URL (default http://127.0.0.1:9049 or $GOTTY_SERVER)")
 	flags.StringSliceVar(&keysBefore, "keys", nil, "engine attached: key names to press before capturing (comma separated, e.g. Escape,Enter)")
+	flags.IntVar(&gifFPS, "gif-fps", 10, "browser gif: target frames per second (real rendering is limited by screenshot speed, ~2-5 fps)")
+	flags.DurationVar(&gifDuration, "gif-duration", 0, "browser gif: record at most this much time (0 = until the stop condition)")
+	flags.IntVar(&gifMaxFrame, "gif-max-frames", 200, "browser gif: maximum number of frames (protects output size)")
+	flags.BoolVar(&gifOptimize, "gif-optimize", true, "browser gif: drop frames identical to the previous one (their delay is folded in)")
 
 	return cmd
+}
+
+// gifOptions 组装 GIF 采样策略;非 gif 格式返回 nil(单张截图路径)。
+func gifOptions(format string, fps int, duration time.Duration, maxFrames int, optimize bool) *capture.GifOptions {
+	if format != "gif" {
+		return nil
+	}
+	return &capture.GifOptions{
+		FPS:       fps,
+		Duration:  duration,
+		MaxFrames: maxFrames,
+		Optimize:  optimize,
+	}
 }
 
 // captureOptions bundles the native-engine CLI flags.
@@ -144,6 +175,8 @@ type captureOptions struct {
 func runCaptureNative(format string, args []string, o captureOptions) error {
 	switch format {
 	case "text", "json", "html", "png":
+	case "gif":
+		return fmt.Errorf("native engine does not render --format gif; use --engine browser --format gif (browser screenshots the real rendering)")
 	default:
 		return fmt.Errorf("unknown format %q (want text|json|html|png)", format)
 	}
@@ -185,7 +218,7 @@ func runCaptureNative(format string, args []string, o captureOptions) error {
 		if err != nil {
 			return fmt.Errorf("render png: %w", err)
 		}
-		return writeCaptureBytes(o.outPath, data)
+		return writeCaptureBytes(o.outPath, "png", data)
 	}
 	return nil
 }
@@ -240,7 +273,7 @@ func runCaptureAttached(baseURL, sessionID string, keys []string, o captureOptio
 		return fmt.Errorf("invalid capture payload: %w", err)
 	}
 	log.Printf("capture(attached): session=%s %dx%d %d bytes", sessionID, out.Cols, out.Rows, len(data))
-	return writeCaptureBytes(o.outPath, data)
+	return writeCaptureBytes(o.outPath, "png", data)
 }
 
 // postJSON POSTs a JSON body and returns the raw response body, turning a
@@ -293,11 +326,11 @@ func writeCaptureOutput(path, payload string) error {
 	return os.WriteFile(path, []byte(payload), 0o644)
 }
 
-// writeCaptureBytes writes binary output (png): stdout when "-", a default
-// timestamped file when --out is unset.
-func writeCaptureBytes(path string, data []byte) error {
+// writeCaptureBytes writes binary output (png/gif): stdout when "-", a
+// default timestamped file (with the given extension) when --out is unset.
+func writeCaptureBytes(path, ext string, data []byte) error {
 	if path == "" {
-		path = "gotty-capture-" + time.Now().Format("20060102-150405") + ".png"
+		path = "gotty-capture-" + time.Now().Format("20060102-150405") + "." + ext
 	}
 	if path == "-" {
 		_, err := os.Stdout.Write(data)

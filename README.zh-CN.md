@@ -121,8 +121,25 @@ gotty capture --format html --out screen.html -- 'printf "\033[31mRED\033[0m"'
 `--marker`、或 `--timeout`(默认 30s;超时返回当前画面并标
 `timed_out`)。文本由内置 VT 仿真器渲染:SGR 颜色(16/256/24-bit)、
 光标/滚动/擦除、备用屏、CJK 宽字符。命令前加 `--`,shell 语法用
-`sh -c "..."`。图形协议图片(kitty/sixel/iTerm2)与像素级浏览器渲染
-计划在后续里程碑实现——见 [docs/design/capture-design.md](docs/design/capture-design.md)。
+`sh -c "..."`。
+
+三个引擎:
+
+```sh
+# browser:真实 headless Chrome 渲染,像素级保真(真实字体/CJK/emoji/sixel)
+gotty capture --engine browser --format png --out shot.png -- htop
+# gif:录动画(htop 刷新、进度条、spinner、构建输出)
+gotty capture --engine browser --format gif --out anim.gif -- \
+    sh -c 'for i in 1 2 3 4 5; do printf "\rprogress %d/5" $i; sleep 0.2; done'
+# attached:让已附着的浏览器合成截图,零 Chromium(需有人正看着该会话)
+gotty capture --engine attached --session-id "$ID" --out live.png
+```
+
+GIF 调参:`--gif-fps`(默认 10,受截图速度限制实际约 2–5)、
+`--gif-duration`(录制时长上限,0 = 直到停止条件)、`--gif-max-frames`
+(默认 200,防体积爆炸)、`--gif-optimize`(默认开,丢弃与上一帧相同的帧)。
+画面完全静止时直接报错并提示改用 `--format png`。kitty 图形协议只有 native
+引擎支持。详见 [docs/design/capture-design.md](docs/design/capture-design.md)。
 
 ## `gotty run` — 给 agent 与测试建会话
 

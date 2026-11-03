@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -55,11 +57,20 @@ type BrowserOptions struct {
 	// BrowserPath reuses an existing Chrome/Chromium binary; empty looks
 	// it up in PATH (google-chrome, chromium, …).
 	BrowserPath string
+
+	// GIF enables animated recording: frames are screenshots taken at
+	// ~FPS during the run and returned in Frames for the caller to encode
+	// (nil = single screenshot, the --format png behavior).
+	GIF *capture.GifOptions
 }
 
 // BrowserResult is the pixel-perfect rendering result from the real page.
 type BrowserResult struct {
-	PNG        []byte
+	PNG []byte
+	// Frames/GIFEnd are set in GIF mode: the recorded (quantized) frames and
+	// the stop-condition instant used as the last frame's delay anchor.
+	Frames     []capture.GifFrame
+	GIFEnd     time.Time
 	SessionID  string
 	StopReason capture.StopReason
 	TimedOut   bool
@@ -152,8 +163,29 @@ func RunBrowser(base string, opts BrowserOptions) (*BrowserResult, error) {
 	time.Sleep(50 * time.Millisecond) // 让首帧渲染完成
 	logf("browser: render ready, waiting for stop condition")
 
-	// 5) 渲染稳定判定:退出(REST)/marker 与静默(页面状态)
+	// 视口对齐终端尺寸(capture 页无 UI 杂项;compositor 截图不受
+	// preserveDrawingBuffer 限制;元素级 Screenshot 在 headless 下不稳,
+	// 故用视口定尺寸 + 全页截图)。GIF 模式每帧都要截图,先设一次。
+	if err := chromedp.Run(pageCtx, chromedp.EmulateViewport(int64(cols*9), int64(rows*18))); err != nil {
+		return nil, fmt.Errorf("emulate viewport: %w", err)
+	}
+
+	// 5) 渲染稳定判定:退出(REST)/marker 与静默(页面状态);
+	//    GIF 模式在未触发停止条件时按帧率追加截图帧。
 	result := &BrowserResult{SessionID: sid}
+	var sampler *capture.GifSampler
+	if opts.GIF != nil {
+		sampler = capture.NewGifSampler(*opts.GIF, start)
+	}
+
+	// takeShot 截一帧整页图(单帧 10s 超时,避免卡死判定循环)。
+	takeShot := func() ([]byte, error) {
+		var shot []byte
+		shotCtx, shotCancel := context.WithTimeout(pageCtx, 10*time.Second)
+		defer shotCancel()
+		err := chromedp.Run(shotCtx, chromedp.CaptureScreenshot(&shot))
+		return shot, err
+	}
 	poll := time.NewTicker(20 * time.Millisecond)
 	defer poll.Stop()
 	timeoutTimer := time.NewTimer(opts.Timeout)
@@ -195,23 +227,51 @@ loop:
 				result.StopReason = capture.StopQuiet
 				break loop
 			}
+			// 停止条件未触发:GIF 模式按帧率采样(截图 ~100-300ms/张,
+			// 实际帧率低于 --gif-fps 时自然降速)。
+			if sampler != nil {
+				sampler.TrySample(time.Now(), func() image.Image {
+					shot, err := takeShot()
+					if err != nil {
+						logf("browser: gif frame screenshot: %v", err)
+						return nil
+					}
+					img, err := png.Decode(bytes.NewReader(shot))
+					if err != nil {
+						logf("browser: gif frame decode: %v", err)
+						return nil
+					}
+					return img
+				})
+			}
 		}
 	}
 
 	// 6) 停止条件满足后,给图形协议图片的异步渲染留出时间(进程可能刚退出)
 	time.Sleep(400 * time.Millisecond)
 
-	// 6b) 视口对齐终端尺寸后整页截图(capture 页无 UI 杂项;compositor 截图
-	// 不受 preserveDrawingBuffer 限制;元素级 Screenshot 在 headless 下不稳,
-	// 故用视口定尺寸 + 全页截图)
-	var shot []byte
+	if sampler != nil {
+		// 6b) GIF:补一帧收尾(覆盖停止时刻),编码交给调用方。
+		stopAt := time.Now()
+		shot, err := takeShot()
+		if err != nil {
+			return nil, fmt.Errorf("final screenshot: %w", err)
+		}
+		img, err := png.Decode(bytes.NewReader(shot))
+		if err != nil {
+			return nil, fmt.Errorf("final screenshot decode: %w", err)
+		}
+		sampler.Force(stopAt, img)
+		logf("browser: stop=%s, gif frames=%d", result.StopReason, sampler.Count())
+		result.Frames, result.GIFEnd = sampler.Snapshot()
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
+	// 6b) PNG:停止后截一帧整页图
 	logf("browser: stop=%s, taking screenshot", result.StopReason)
-	shotCtx, shotCancel := context.WithTimeout(pageCtx, 10*time.Second)
-	defer shotCancel()
-	if err := chromedp.Run(shotCtx,
-		chromedp.EmulateViewport(int64(cols*9), int64(rows*18)),
-		chromedp.CaptureScreenshot(&shot),
-	); err != nil {
+	shot, err := takeShot()
+	if err != nil {
 		return nil, fmt.Errorf("screenshot: %w", err)
 	}
 	logf("browser: screenshot %d bytes", len(shot))

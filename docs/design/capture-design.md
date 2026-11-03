@@ -2,11 +2,14 @@
 
 > 状态：**M1（native 文本）、M2（native 图片/PNG）、M3（browser 引擎 +
 > `/capture/:sid` 渲染页 + 前端图片）、M4（attached 引擎 + 前端合成截屏 +
-> `POST /api/sessions/:id/capture` + `--keys` 交互）均已实现**（M4 于 2026-11-04）。
+> `POST /api/sessions/:id/capture` + `--keys` 交互）、M5（browser 动画 GIF）
+> 均已实现**（M4/M5 于 2026-11-04）。
 >
-> **使用推荐：M3 优先、M2 兜底** —— 像素级渲染（真实字体/CJK/emoji、
+> **使用推荐：M3/M5 优先、M2 兜底** —— 像素级渲染（真实字体/CJK/emoji、
 > sixel/iTerm2 图片的正确形态）用 `gotty capture --engine browser --format png`;
-> 无浏览器/无人值守/要文本或 kitty 图片时用默认 native 引擎。
+> 动态渲染（htop 刷新、进度条、spinner、构建动画）用
+> `gotty capture --engine browser --format gif`；无浏览器/无人值守/要文本或
+> kitty 图片时用默认 native 引擎。
 >
 > 目标：提供 `gotty capture` 命令——像 Playwright 驱动浏览器一样，执行指定命令，
 > 取回该命令在浏览器终端中的渲染结果（文字与图片均支持）。
@@ -76,18 +79,28 @@ Playwright 类比：
 
 ```
 gotty capture [flags] [--] <command> [args...]
-  --engine string       渲染引擎: native|browser(默认 native)
-  --format string       结果格式: text|json|html|png(默认 text)
+  --engine string       渲染引擎: native|browser|attached(默认 native)
+  --format string       结果格式: text|json|html|png(默认 text);
+                        browser 额外支持 gif(动画截图)
   --cols int            终端列数(默认 120)
   --rows int            终端行数(默认 30)
   --wait-ms int         输出静默 N ms 判定渲染稳定(默认 500)
   --timeout duration    总超时;超时仍输出当前画面,标 timed_out:true(默认 30s)
   --marker string       输出流中出现该字符串即判定渲染稳定
   --out string          输出目标: 路径 或 "-"(text/json/html 缺省→stdout;
-                       png 缺省→ gotty-capture-<时间戳>.png)
+                       png 缺省→ gotty-capture-<时间戳>.png,
+                       gif 缺省→ gotty-capture-<时间戳>.gif)
   --browser-path string browser 引擎: 复用系统 Chrome/Chromium(未指定则自动查找)
   --port int            browser 引擎: 临时 server 端口,0=随机(默认 0)
   --session-id string   browser/attached: 附着已有会话(与 command 互斥)
+  --server string       attached: GoTTY 服务地址(默认 http://127.0.0.1:9049)
+  --keys strings        attached: 截图前先按下的键名(逗号分隔)
+  --gif-fps int         browser gif: 目标帧率(默认 10;受截图速度限制,实际约 2–5)
+  --gif-duration duration browser gif: 录制时长上限(默认 0 = 直到停止条件;
+                       只作采样上限,不改变停止条件)
+  --gif-max-frames int  browser gif: 帧数上限,防体积/内存爆炸(默认 200)
+  --gif-optimize bool   browser gif: 丢弃与上一帧像素相同的帧,
+                       其时间并入 delay(默认 true)
 ```
 
 示例：
@@ -99,6 +112,11 @@ gotty capture --format png --out screen.png -- htop              # 全屏 TUI
 gotty capture --cols 200 --rows 50 --marker 'Press q' -- htop
 gotty capture --engine browser --format png -- chafa --format kitty logo.png
 gotty capture --engine browser --session-id abc123abc123abca --format png -o live.png
+gotty capture --engine attached --session-id abc123abc123abca -o live.png
+gotty capture --engine browser --format gif --out progress.gif -- \
+    sh -c 'for i in 1 2 3 4 5; do printf "\rprogress %d/5" $i; sleep 0.2; done'
+gotty capture --engine browser --format gif --gif-duration 8s --out build.gif -- \
+    sh -c 'make; make test'                            # 只录前 8 秒的构建动画
 ```
 
 ## 5. native 引擎（M1/M2）
@@ -186,6 +204,58 @@ gotty capture --engine browser -- chafa --format kitty img.png
 2. `.terminal` 上叠 `@xterm/addon-image`（M3）：否则浏览器端不渲染图形协议图片，
    截图截不到图——日常页与 capture 页同步受益。
 
+### 6.4 GIF 动画截图（M5，已实现 2026-11-04）
+
+**结论先行：GIF 只在 browser 引擎实现，不做 native 光栅化采样**。原因：native 的
+PNG 光栅化是"网格近似"（CJK/emoji 是占位框、字体非真实渲染），录成动画的保真
+价值低于 png 静态快照；而 browser 引擎本来就要逐帧真实渲染（截图），GIF 只是把
+"停止后截一帧"换成"判定循环里按帧率定时截图 + 停止后补一帧收尾"，实现成本低且
+像素级保真。静态 png 与动画 gif 复用同一套停止语义（exit / 静默 / marker / timeout）。
+
+```
+gotty capture --engine browser --format gif --out anim.gif -- <command>
+  ├─ 与 png 相同的启动流程:临时 server → 会话 → capture 页 → 渲染就绪
+  ├─ EmulateViewport(cols*9, rows*18) 设一次(与 png 路径一致,视口定尺寸+全页截图)
+  ├─ 判定循环(poll ticker 20ms)中:先做停止判定;未触发时按 --gif-fps 截图:
+  │    now >= nextAt → CaptureScreenshot(单帧 10s 超时)→ 解码 → 量化 → 入帧缓冲
+  │    (截图每张约 100–300ms,实际帧率约 2–5fps,--gif-fps 超出时自然降速)
+  ├─ 停止触发 → sleep 400ms(留给异步图片渲染)→ 补一帧收尾(force,At=停止时刻)
+  └─ EncodeGIF:delay 由相邻帧采样时刻差换算,末帧覆盖到停止时刻 → 落盘 .gif
+```
+
+**帧缓冲与去重**（`internal/capture/gif.go`）：
+
+- 采样即量化：截图解码后立即 `PopularQuantize`（流行色直方图 → ≤256 色局部
+  调色板，其余像素就近映射）成 `image.Paletted`（1 字节/像素）再入缓冲——
+  200 帧 @120×30 只有 ~120MB，而不是 RGBA 的 ~1.9GB；
+- **optimize 去重在量化前做**：同一帧保留原始 RGBA（`last`），新帧先与上一帧
+  `bytes.Equal` 像素对比，相同则丢弃（时间自然并入上一帧 delay）。注意不能在
+  量化后按"索引序列"比较——两帧调色板不同但索引可能相同（纯色换色画面）；
+- `--gif-max-frames`（默认 200）与 `--gif-duration` 双上限；`--gif-duration`
+  只是采样上限，不改变停止条件；
+- EncodeGIF 的兜底合并（force 收尾帧可能与末帧相同）用调色板感知比较：
+  逐像素比 `palette[pix]` 的实际颜色。
+
+**时间轴**：第 i 帧 delay = 第 i+1 帧采样时刻 − 第 i 帧采样时刻（毫秒→百分之一
+秒，四舍五入，最小 1），**末帧延迟到停止时刻**——播放总时长 = 停止时刻 − 首帧
+时刻 = 录制时长；`--gif-optimize` 合并相同帧后总和不变。`LoopCount=0` 无限循环。
+
+**边界**：
+
+- 内容静止（只有 ≤1 个不同画面）：编码时返回
+  `gif: content is static (single frame); use --format png for a still image`，
+  提示用户改静态快照；
+- 备用屏（htop/vim）：页面真实渲染，`?1049` 切换自然录进帧序列；
+- 光标：`CaptureView` 已 `cursorBlink:false`，不会出现光标闪烁噪声；
+- `--format gif` 传 native 引擎直接报错（提示用 browser 引擎）；gif 缺省输出
+  文件名 `gotty-capture-<时间戳>.gif`。
+
+**量化器选型**：终端画面颜色多为少量纯色（背景黑、前景灰、ANSI 色）+ 反锯齿
+过渡，流行色量化（直方图取 Top-N，其余就近映射）能精确保留主要颜色，且每帧
+局部调色板各不相同、由 GIF 编码器按需写局部色表，比固定 ANSI 256 色表保真更好
+（反锯齿灰阶不会坍缩成 24 级灰度带）；`x/image/draw` 自 v0.45 起不再自带
+量化器实现（仅保留 stdlib 接口别名），故自研 ~60 行，无新增依赖。
+
 ## 7. 前端路由与 CaptureView（M3）
 
 ### 7.1 路由设计
@@ -265,6 +335,7 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 | **M2** | native 图片 | graphics.go（kitty → sixel → iterm2）+ `--format png` + `images[]`；依赖 go-sixel | ✅ 已实现 |
 | **M3** | browser 引擎 + 路由 | vue-router、`/capture/:sid`、`ws.ts onReady`、临时 server 驱动、chromedp；前端 `@xterm/addon-image`（sixel/iTerm2） | ✅ 已实现 |
 | **M4** | attached / API / 交互 | `CaptureRequest/CaptureResult`（分片）+ 前端 canvas 合成；`POST /api/sessions/:id/capture` + `captures/latest`；`--keys` 交互 | ✅ 已实现 |
+| **M5** | browser 动画 GIF | `--format gif` + `--gif-fps/-duration/-max-frames/-optimize`；采样即量化、optimize 去重、delay 时间轴 | ✅ 已实现 |
 
 ## 11. 测试与验收
 
@@ -280,6 +351,11 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 - **路由回归**：`/` 行为不变（TabBar/manifest/轮询照旧）；`/#/capture/<sid>`
   无 TabBar、置就绪标志、不写 localStorage。
 - **browser vs native 回归**：同一命令两张图 diff（M3）。
+- **GIF（M5）**：`internal/capture/gif_test.go` 覆盖采样间隔/时长上限/帧数上限/
+  optimize 去重/force 收尾、流行色量化的调色板与就近映射、EncodeGIF 的 delay
+  时间轴与解码回放、静态画面与空帧错误；`internal/browser/browser_test.go` 的
+  `TestBrowserEngineGIF`（`browser_e2e` 标签）跑真实 Chrome 录制并断言首末帧
+  不同、帧为 ≤256 色 Paletted、尺寸与视口一致。
 
 ## 12. 改动清单汇总
 
@@ -309,4 +385,10 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 4. **chromedp 而非 Playwright**：保持 Go 进程内的驱动；`--browser-path` 复用系统
    Chrome 可跳过下载。
 5. **库依赖最小集**：runewidth（必须）、mattn/go-sixel（推荐，M2）、vt10x
-   （可选替代自研状态机）、chromedp（仅 M3）。
+   （可选替代自研状态机）、chromedp（仅 M3）。GIF 编码用标准库 `image/gif`，
+   量化器自研，**无新增依赖**。
+6. **GIF delay 语义偏离"固定帧间隔"**：按相邻帧的**实际采样时刻差**换算 delay，
+   而不是用 `1/fps` 定长。理由：browser 截图耗时随画面复杂度波动（100–300ms），
+   定长 delay 会让播放速度与实际录制速度脱节（画面越复杂播得越快）；用实测间隔
+   则总时长与录制时长一致，`--gif-optimize` 合并帧后总和也不变。代价是帧率不均
+   匀——对终端动画（进度条、htop 刷新）可接受。

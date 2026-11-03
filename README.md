@@ -6,8 +6,8 @@ GoTTY is a command line tool that runs your CLI tools in browser-hosted
 terminals: sessions are created over a REST API, attached over WebSocket
 and managed as tabs in the page. `gotty capture` turns the same PTY
 pipeline into an end-to-end testing command — run anything headlessly and
-take the rendered result away as text, styled JSON cells or HTML,
-Playwright-style.
+take the rendered result away as text, styled JSON cells, HTML, PNG
+snapshots or GIF animations, Playwright-style.
 
 ![Screenshot](screenshot.gif)
 
@@ -128,12 +128,22 @@ Drives a headless Chrome/Chromium against the real gotty render page and
 screenshots the terminal — **what the user sees is exactly what you get**:
 real fonts, CJK, emoji, and graphics-protocol images (sixel, iTerm2
 inline). Needs a Chrome/Chromium (searched on PATH; `--browser-path`
-points at an existing binary).
+points at an existing binary). `--format png` captures a still frame;
+`--format gif` records an animation (htop refresh, progress bars,
+spinners, build output).
 
 ```sh
 gotty capture --engine browser --format png --out shot.png -- htop
 gotty capture --engine browser --format png -- sh -c 'ls -la | head -20'
+gotty capture --engine browser --format gif --out anim.gif -- \
+    sh -c 'for i in 1 2 3 4 5; do printf "\rprogress %d/5" $i; sleep 0.2; done'
 ```
+
+GIF tuning: `--gif-fps` (default 10; capped by screenshot speed, ~2–5 in
+practice), `--gif-duration` (recording cap in time, 0 = until the stop
+condition), `--gif-max-frames` (default 200, protects output size) and
+`--gif-optimize` (default on, drops frames identical to the previous one).
+A static result is an error that tells you to use `--format png`.
 
 ### Attached engine (a browser is already watching) — `--engine attached`
 
@@ -157,7 +167,8 @@ Runs the PTY and a built-in VT emulator in-process: no browser, no
 Chromium, works on bare servers and in CI. Renders text / styled JSON
 cells / HTML / a PNG bitmap. The **kitty graphics protocol is supported
 here only**; in PNG output CJK/emoji glyphs render as placeholder boxes
-(pixel-perfect text needs the browser engine).
+(pixel-perfect text needs the browser engine). It does **not** render
+`--format gif` — record animations with the browser engine.
 
 ```sh
 gotty capture --format text -- ls -la

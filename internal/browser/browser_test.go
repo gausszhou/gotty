@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
+	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -230,4 +232,65 @@ func TestBrowserEngineWaitMs(t *testing.T) {
 	if res.Duration > 9*time.Second {
 		t.Errorf("quiet should trigger while the process is still running (took %v)", res.Duration)
 	}
+}
+
+// TestBrowserEngineGIF 覆盖 M5 动画录制:判定循环内按帧率采样、停止后补收尾帧,
+// 帧已是 ≤256 色的 Paletted(量化在采样时完成,不把原始 RGBA 留在缓冲里),
+// 且编码出的 GIF 首末帧内容不同(证明真的录到了动画而不是同一张图重复)。
+func TestBrowserEngineGIF(t *testing.T) {
+	chrome := findChrome()
+	if chrome == "" {
+		t.Skip("no Chrome/Chromium binary found; browser engine not exercised")
+	}
+	base := newBrowserTestServer(t)
+
+	res, err := RunBrowser(base, BrowserOptions{
+		Command:     "/bin/sh",
+		Args:        []string{"-c", "for i in 1 2 3 4 5; do printf '\\r%d' $i; sleep 0.15; done"},
+		Cols:        60,
+		Rows:        10,
+		WaitMs:      300,
+		Timeout:     30 * time.Second,
+		BrowserPath: chrome,
+		GIF:         &capture.GifOptions{FPS: 20, MaxFrames: 100, Optimize: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Frames) < 2 {
+		t.Fatalf("frames = %d, want >= 2 (animation should be sampled)", len(res.Frames))
+	}
+	for i, f := range res.Frames {
+		if len(f.Image.Palette) > 256 {
+			t.Errorf("frame %d palette = %d, want <= 256", i, len(f.Image.Palette))
+		}
+		if f.Image.Bounds().Dx() != 60*9 || f.Image.Bounds().Dy() != 10*18 {
+			t.Errorf("frame %d size = %v, want %dx%d", i, f.Image.Bounds(), 60*9, 10*18)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := capture.EncodeGIF(&buf, res.Frames, res.GIFEnd, true); err != nil {
+		t.Fatal(err)
+	}
+	dec, err := gif.DecodeAll(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.Image) < 2 {
+		t.Fatalf("decoded frames = %d, want >= 2", len(dec.Image))
+	}
+	first := gifFrameRGBA(dec.Image[0])
+	last := gifFrameRGBA(dec.Image[len(dec.Image)-1])
+	if bytes.Equal(first.Pix, last.Pix) {
+		t.Error("first and last GIF frames should differ (progress animation)")
+	}
+}
+
+// gifFrameRGBA 把调色板帧还原成 RGBA,便于按像素比较内容。
+func gifFrameRGBA(p *image.Paletted) *image.RGBA {
+	b := p.Bounds()
+	dst := image.NewRGBA(b)
+	draw.Draw(dst, b, p, b.Min, draw.Src)
+	return dst
 }
