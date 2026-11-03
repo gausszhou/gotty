@@ -28,6 +28,13 @@ const (
 	maxEnvNameLen     = 128
 	maxEnvValueLen    = 16 << 10
 	maxTermLen        = 64
+	// maxSessionScrollback caps a session-level history override. Unlike env
+	// (a few KiB) scrollback is the real memory knob — every retained line
+	// costs cols×cell bytes — so an unbounded value is a one-request memory
+	// amplifier. 10000 is the x/vt default and roughly 130MB at 120 columns;
+	// raising the ceiling for every session is an operator decision
+	// (`serve --scrollback`).
+	maxSessionScrollback = 10000
 )
 
 type createSessionRequest struct {
@@ -79,8 +86,13 @@ func validateSessionParams(req *createSessionRequest) error {
 			}
 		}
 	}
-	if req.Scrollback != nil && *req.Scrollback < 0 {
-		return fmt.Errorf("scrollback must be >= 0")
+	if req.Scrollback != nil {
+		if *req.Scrollback < 0 {
+			return fmt.Errorf("scrollback must be >= 0")
+		}
+		if *req.Scrollback > maxSessionScrollback {
+			return fmt.Errorf("scrollback too large (max %d)", maxSessionScrollback)
+		}
 	}
 	return nil
 }

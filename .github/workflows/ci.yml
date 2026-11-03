@@ -55,5 +55,11 @@ jobs:
       - name: Skill smoke (gotty run + gotty-tui-test)
         run: bash scripts/e2e/skill-smoke.sh ./build/gotty
 
+      # Agent API e2e: scrollback tail, alternate screen, key layer, mouse
+      # 409/--force and bracketed paste — the acceptance items of 0004/0005
+      # that were never covered by unit tests alone.
+      - name: Agent API e2e (scrollback / keys / mouse / paste)
+        run: bash scripts/e2e/agent-api.sh ./build/gotty
+
       - name: Verify binary runs
         run: ./build/gotty --version

@@ -57,8 +57,9 @@ curl -X POST localhost:9049/api/sessions -d '{"command": "top"}'   # 显式命�
 | `--max-session` | 最大并发会话数（默认 0 = 不限） |
 | `--mirror` | 为每个会话保留屏幕镜像（agent 读屏；默认 true，关闭后 `screen`/`wait` 返回 503） |
 | `--answer-queries` | 无浏览器客户端时由镜像应答终端查询（默认 true） |
-| `--scrollback` | 每个会话镜像保留的历史行数（默认 1000，0 = 关闭） |
-| `--font` / `--font-size` | native PNG 栅格化使用的 TTF/OTF 与字号（空 = 内嵌 Go Mono） |
+| `--scrollback` | 每个会话镜像保留的历史行数（默认 1000，0 = 关闭；会话级可覆盖，上限 10000） |
+| `--env` | 给所有会话注入环境变量 `K=V`，可重复（`GOTTY_ENV` 用逗号分隔；会话级 `env` 覆盖同名项） |
+| `--font` / `--font-size` | native PNG 栅格化使用的 TTF/OTF 与字号（空 = 内嵌 Go Mono；不支持 `.ttc` 字体集合） |
 | `--timeout` | 空闲会话销毁超时秒数（0 = 禁用） |
 | `--session-file` | 会话记录持久化文件（默认 `~/.gotty/sessions.json`，空 = 关闭） |
 | `--title-file` | 页面标题持久化文件（默认 `~/.gotty/title.json`，空 = 仅内存） |

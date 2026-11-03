@@ -159,6 +159,11 @@ type Session struct {
 	mirror     ScreenMirror
 	mirrorVer  uint64    // bumped per output chunk (wait uses it for change detection)
 	mirrorLast time.Time // last chunk time (wait quiet detection)
+	// mirrorCols/mirrorRows remember the size last applied to the mirror so a
+	// redundant resize does not bump mirrorVer (which would make every monitor
+	// re-snapshot the grid for nothing).
+	mirrorCols int
+	mirrorRows int
 
 	// answerQueries gates the mirror's terminal-query answers: they are
 	// written back into the PTY only when it is set AND no browser client
@@ -280,10 +285,18 @@ func (s *Session) Resize(cols, rows int) error {
 }
 
 // syncMirrorSize resizes the mirror grid to match the PTY.
+//
+// A real size change also bumps mirrorVer: resizing re-indexes every row, so it
+// is a visible change even when no output arrived. Without the bump a monitor
+// (or a later read) that short-circuits on an unchanged version would never
+// learn about "resize only, no output" until the next chunk.
 func (s *Session) syncMirrorSize(cols, rows int) {
 	s.mirrorMu.Lock()
-	if s.mirror != nil {
+	if s.mirror != nil && (s.mirrorCols != cols || s.mirrorRows != rows) {
 		s.mirror.Resize(cols, rows)
+		s.mirrorCols, s.mirrorRows = cols, rows
+		s.mirrorVer++
+		s.mirrorLast = time.Now()
 	}
 	s.mirrorMu.Unlock()
 }

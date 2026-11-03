@@ -231,6 +231,7 @@ func (e *Emulator) EncodeMouse(ev MouseEvent) ([]byte, error) {
 	}
 
 	var out []byte
+	dragName := "" // drag 的按钮名(未显式给 button 时沿用 held),供 last_event 展示
 	switch ev.Action {
 	case MouseClickAction:
 		if btn == uv.MouseNone {
@@ -285,6 +286,7 @@ func (e *Emulator) EncodeMouse(ev MouseEvent) ([]byte, error) {
 			out = append(out, encodeMouse(step, dragBtn, true, false, sgr)...)
 		}
 		e.markHeld(buttonNameOf(dragBtn), true)
+		dragName = buttonNameOf(dragBtn)
 
 	case MouseScrollAction:
 		if !isWheel(btn) {
@@ -303,7 +305,16 @@ func (e *Emulator) EncodeMouse(ev MouseEvent) ([]byte, error) {
 	}
 
 	e.mouseCol, e.mouseRow = ev.Col, ev.Row
-	e.mouseLast = describeMouse(ev)
+	if ev.Action == MouseDragAction {
+		// 拖拽的落点是终点:后续不带坐标的 up/scroll 会复用它,停在起点
+		// 会在错误的位置释放(控件认为拖拽没结束)。
+		e.mouseCol, e.mouseRow = ev.ToCol, ev.ToRow
+	}
+	last := ev
+	if dragName != "" && last.Button == "" {
+		last.Button = dragName
+	}
+	e.mouseLast = describeMouse(last)
 	return out, nil
 }
 

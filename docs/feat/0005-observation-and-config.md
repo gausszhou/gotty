@@ -1,6 +1,6 @@
 # 优化 5:观察侧与配置面补齐 —— scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述
 
-> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收测试未补齐**(2026-08-30;承接 [0004](0004-agent-input-parity.md) §5 的"范围外"清单)
+> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收已于 2026-11-03 补齐**(2026-08-30;承接 [0004](0004-agent-input-parity.md) §5 的"范围外"清单)
 >
 > 背景:0004 把 `tu` 的**输入侧**(鼠标 / 键名 / 粘贴)补齐后,`tu` 剩下的能力
 > 缺口全部落在**观察侧与配置面**:`monitor`(终端内 30fps 观察器)、`scrollback`
@@ -209,19 +209,44 @@
 - **monitor 帧率**:服务端默认/上限均为 30fps,CLI `--fps` 默认 10。
 - **monitor 的"镜像关闭"不是 503**:它是 WebSocket 通道,无镜像时以 `1007` 关闭并
   附带原因;§4 验收里写的"统一 503"只对 `scrollback` 成立。
-- **全局 `--env` 未落地**:设计里的"`Options.Env` 补 `flagName` + 可重复 `--env K=V`"
-  没有实现,目前只有会话级 `env` 注入;`internal/terminal/options.go` 的注释仍写着
-  "由可重复的 `--env K=V` 提供",与现状不符,待修。
+- **全局 `--env` 已补齐(2026-11-03)**:`terminal.Options.Env` 加了 `flagName`,
+  `internal/config` 的反射层支持 `[]string`(`flags.StringArray`,并接受
+  `GOTTY_ENV="K=V,K2=V2"` 逗号分隔形式),`serve --env K=V` 可重复。会话级 `env`
+  仍然后追加并胜出——`buildEnv` 现在**按 key 去重、后出现者胜**,并剥离继承环境里
+  的同名变量(此前只是简单 append,子进程会看到两份同名项,而 glibc 的 `getenv`
+  取第一个,全局值反而压过会话级值)。
 - **`list` / daemon / 内嵌 CJK / emoji** 按 §5 保持搁置。
 
-### 6.3 未完成的验收(§4)与文档同步
+### 6.3 验收(2026-11-03 补齐)与文档同步
 
-- scrollback:行转 `Grid` 的文本/JSON、宽字符、颜色、超长行、`lines` 尾部优先、
-  备用屏、`--scrollback=0`、容量上限;
-- monitor:脏行正确性、0 订阅者零成本、断连后 goroutine 不泄漏、与 attach 共存零抢占;
-- per-session:`env/cwd/term/scrollback` 的生效与 400 校验(含 Windows);
-- 字体:`--font` 的非 tofu 渲染与"文件不存在必须报错";
-- §4 的 4 条 e2e,以及第 4 条"`usage`/`AGENTS.md` 示例进 CI"的验收;
-- **文档同步**:README/README.zh-CN 的选项表与 `gotty run` / `gotty skill` 说明、
-  以及 `apps/docs/guide/usage.md` 的命令/端点/选项均已由
-  [0008](0008-tui-test-skill.md) 补齐。
+2026-09-14 落地时 §4 的增量测试与 e2e 没有跟着进仓库,2026-11-03 补齐:
+
+| 验收项 | 覆盖位置 |
+|---|---|
+| scrollback:行转 `Grid` 的文本/JSON(宽字符、SGR 索引/256/真彩、超长行折行与截断)、`lines=N` 尾部优先、备用屏、`--scrollback=0`、容量上限与运行期缩容 | `internal/capture/scrollback_test.go` |
+| monitor:脏行只推变化行(单元层 + 真实 `/ws?mode=mirror`)、0 订阅者零成本、断连不泄漏 goroutine、与 attach 共存零抢占 | `internal/api/monitor_ws_test.go` |
+| per-session:`env/cwd/term/scrollback` 生效(读屏断言)与 400 校验(含边界值恰好等于上限) | `internal/api/session_config_test.go` |
+| 字体:`--font` 非 tofu 渲染、`--font-size` 缩放、文件不存在/不可解析必须报错(不静默回退) | `internal/capture/render_font_test.go` |
+| e2e:scrollback 尾部优先、备用屏、键名闭环、鼠标 409/`--force`、条件括号粘贴、`gotty usage` 体积 | `scripts/e2e/agent-api.sh`,已接入 CI |
+
+**文档同步**:README/README.zh-CN 的选项表补了 `--env`(与 `--font` 的 `.ttc` 限制)、
+`apps/docs/guide/usage.md` 同步;`gotty run` / `gotty skill` 的说明由
+[0008](0008-tui-test-skill.md) 负责,已就位。
+
+补齐过程中顺带修了四个真实缺陷(都由新增测试暴露,均有回归用例):
+
+- **per-session `scrollback` 没有上限**——`env` 有 256 条/64KiB 上限正是防内存放大,
+  而 scrollback 才是真正的内存旋钮;一个请求传 `scrollback: 10000000` 会被接受。
+  现加 `maxSessionScrollback = 10000` 上限并 400,边界用例在 `TestValidateSessionParams`。
+- **monitor 的快照与版本非原子**——`buildMirrorDiff` 先 `Screen()` 再读
+  `MirrorVersion()`,并发输出可在两步之间插入,导致帧内容对应版本 N 而版本记成
+  N+1,该 chunk 的脏行在屏幕随后静默时**永远不会推送**。现由
+  `Session.ScreenWithVersion()` 在同一把 `mirrorMu` 内成对读取。
+- **纯 resize 观察不到**——`syncMirrorSize` 改尺寸但不推进版本,monitor 的"版本未变
+  就跳过快照"会一直跳过。现真实尺寸变化推进版本(同尺寸冗余 resize 不推进,避免空转),
+  回归用例 `TestSessionResizeBumpsMirrorVersion`。
+- **monitor 空帧空转**——版本前进但无行变化(只有光标移动/SGR)时原代码 `continue`
+  不更新 `lastVer`,下一 tick 又全量快照,形成空转。现记录版本后跳过。
+- 另:`scrollback.go` 里宽字符前导格恰好落在当前屏最后一列时,续列无处安放却仍写了
+  前导格,使 `Text` 比 `Grid.Cols()` 宽一格、PNG 越过画布右缘;现整格留空,
+  回归用例 `TestScrollbackWideCharAtLastColumn`。

@@ -140,6 +140,11 @@ func (server *Server) serveMonitor(ctx context.Context, conn *websocket.Conn, se
 				return
 			}
 		} else if len(frame.Lines) == 0 {
+			// The version moved but no row changed (cursor-only move, SGR
+			// only, a resize to the same size…). Record the version anyway:
+			// leaving lastVer behind would make the next tick snapshot and
+			// diff the whole grid again, forever, while the screen is idle.
+			lastVer, lastCols, lastRows = frame.Version, frame.Cols, frame.Rows
 			continue
 		}
 
@@ -156,7 +161,7 @@ func (server *Server) serveMonitor(ctx context.Context, conn *websocket.Conn, se
 func buildMirrorDiff(sess *session.Session, baseline []string, full bool) (terminal.MirrorDiffFrame, bool) {
 	frame := terminal.MirrorDiffFrame{SessionID: sess.ID(), Full: full}
 
-	snap, err := sess.Screen()
+	snap, version, err := sess.ScreenWithVersion()
 	if err != nil {
 		return frame, false
 	}
@@ -165,7 +170,7 @@ func buildMirrorDiff(sess *session.Session, baseline []string, full bool) (termi
 		return frame, false
 	}
 
-	frame.Version = sess.MirrorVersion()
+	frame.Version = version
 	frame.Cols, frame.Rows = raw.Cols, raw.Rows
 	frame.Cursor = terminal.MirrorCursor{
 		Row:     raw.CursorRow,

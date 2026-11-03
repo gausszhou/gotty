@@ -1,6 +1,6 @@
 # 优化 4:输入侧对齐 —— 鼠标驱动 / 键名层 / 粘贴 + agent CLI 面
 
-> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收测试未补齐**(对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 二次调研,2026-08-30)
+> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收已于 2026-11-03 补齐**(对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 二次调研,2026-08-30)
 >
 > 背景:0001 落地了"看屏 / 等文字 / 发字节"三个 agent 驱动原语,但 `tu` 的
 > **输入侧**还剩三块没对齐,且当时被显式划出范围(0001 §5):鼠标
@@ -253,18 +253,32 @@
   清单一致,但不是独立的 `gotty scroll`。
 - **`list` / daemon / `?1005`/`?1015`/SGR-pixel** 按 §5 保持不做。
 
-### 6.3 未完成的验收(§4)
+### 6.3 验收(2026-11-03 补齐)
 
-以下测试**在仓库里不存在**(全仓 `_test.go` 中 grep 无命中;`go test ./...` 全绿只
-说明这些路径没被覆盖):
+2026-09-14 落地时 §4 的增量测试与 e2e 没有跟着进仓库,2026-11-03 补齐:
 
-- 鼠标 X10 / SGR 逐字节断言、修饰位、多击、拖拽插值点集;
-- `--on-text` / `--on-regex` 的重复匹配、`match_index`、宽字符、未命中、越界;
-- `?2004` 开 / 关 / `force_paste` 三个分支;
-- `mouse state` 的空会话与已开启两种形态;
-- §4 的 4 条 agent e2e(`mc` 点击、`vim` 键名退出、条件粘贴、409/`--force`)——
-  现有 `scripts/e2e/` 只有浏览器侧的 `manifest-flow.mjs` / `resilience.mjs`。
+| 验收项 | 覆盖位置 |
+|---|---|
+| 鼠标 X10 / SGR 逐字节、修饰位、多击、拖拽插值、与 `ansi.MouseX10/MouseSgr` 对拍、模式跟踪与 `SendMouse` 一致性、错误路径 | `internal/capture/mouse_test.go` |
+| `--on-text` / `--on-regex`:中心格、重复匹配 + `match_index`、宽字符左格、未命中、越界、逐行锚定 | `internal/capture/locate_test.go` |
+| `?2004` 开 / 关 / `force_paste` 三分支(逐字节验证包装标记,且不双包) | `internal/api/agent_paste_test.go` |
+| `mouse state` 空会话(`"enabled": false` 显式存在)与已开启两种形态(含 held / last_event / `--mirror=false` → 503) | 同上 |
+| agent e2e:`press` 键名闭环(`cat` + `wait --regex`)、鼠标 `409` / `--force`、条件括号粘贴(专用 fixture) | `scripts/e2e/agent-api.sh`,已接入 CI |
 
-键名层有 `internal/keys/keys_test.go` 两个用例(命名键 + 可打印字符),覆盖了 §2.4 的
-主路径;`input` 老路径的回归由 `internal/api/agent_handler_test.go` 的
-`TestAgentKeysEcho` / `TestAgentKeysBase64` 覆盖。
+e2e 没有按 §4 原文用 `mc` / `vim`:`mc` 与 `vim` 不是 CI 的必备依赖,改用 `cat`(键名
+闭环)与 `scripts/e2e/fixture-paste`(真实开启 `?2004` 后 raw 读取一次输入并回报
+`wrapped/len/nl/head/tail`)做等价断言,既 hermetic 又能真正失败。`--on-text` 的命中
+由 `locate_test.go` 的单元层覆盖,e2e 里用坐标点击 + `--force` 覆盖同一写路径。
+
+补齐过程中顺带修了两个真实缺陷:
+
+- `locate.go`:匹配跨度横跨宽字符时,算术中心格可能落在**续格**(`Rune == 0`),
+  点击坐标偏一列。现按 §2.3 回退到前导格,回归用例
+  `TestLocateTextWideSpanCenterClamp`。
+- `mouse.go`:拖拽后虚拟光标停在**起点**,导致后续不带坐标的 `mouse up` 在错误位置
+  释放。现落在终点,并把 drag 的按钮名带进 `last_event`,回归用例
+  `TestMouseDragMovesVirtualCursor`。
+
+键名层原本就有 `internal/keys/keys_test.go`(命名键 + 可打印字符),`input` 老路径的
+回归由 `internal/api/agent_handler_test.go` 的 `TestAgentKeysEcho` /
+`TestAgentKeysBase64` 覆盖。

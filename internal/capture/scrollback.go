@@ -107,8 +107,14 @@ func scrollbackLineToCells(line uv.Line, cols int) []Cell {
 		if c.Width == 0 {
 			continue // 宽字符续列
 		}
+		if c.Width > 1 && x+1 >= cols {
+			// 宽字符的前导格落在最后一列:续列无处安放。照写会让行宽超出
+			// cols —— Text/HTML 比 Grid.Cols() 宽一格,PNG 按 runewidth 画
+			// 两格并越过画布右缘被裁。与"按当前宽度截断"保持一致,整格留空。
+			continue
+		}
 		row[x] = vtCellToGrid(&c)
-		if c.Width > 1 && x+1 < cols {
+		if c.Width > 1 {
 			row[x+1] = Cell{}
 			x++
 		}

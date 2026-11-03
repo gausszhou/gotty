@@ -34,9 +34,12 @@ type Options struct {
 
 	// Font/FontSize drive native PNG rasterization (GET /screen?format=png).
 	// Font empty uses the embedded Go Mono (Latin only); a path to a
-	// CJK-capable TTF/OTF renders CJK instead of tofu boxes. An unreadable
-	// font is an error, never a silent fallback.
-	Font     string `json:"font" flagName:"font" flagDescribe:"TTF/OTF font file for native PNG rasterization (empty = embedded Go Mono)" default:""`
+	// CJK-capable TTF/OTF renders CJK instead of tofu boxes. Only single-font
+	// SFNT files are supported — font collections (.ttc/.otc, e.g. the
+	// fonts-noto-cjk package) are rejected with an explicit parse error, not
+	// silently ignored. An unreadable font is an error, never a silent
+	// fallback.
+	Font     string `json:"font" flagName:"font" flagDescribe:"TTF/OTF font file for native PNG rasterization (single font; .ttc collections unsupported; empty = embedded Go Mono)" default:""`
 	FontSize int    `json:"font_size" flagName:"font-size" flagDescribe:"Font size in points for native PNG rasterization (0 = derive from cell height)" default:"0"`
 
 	// Timeout 是会话淘汰策略:超过该秒数没有任何客户端附着(浏览器全关/

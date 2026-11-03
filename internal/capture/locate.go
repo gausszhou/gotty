@@ -59,7 +59,14 @@ func (g *Grid) LocateRegex(re *regexp.Regexp, index int) (row, col int, ok bool)
 			startCol := runeCol[startRune]
 			lastIdx := endRune - 1
 			endCol := runeCol[lastIdx] + max(1, runeWidth[lastIdx]) - 1
-			return r, (startCol + endCol) / 2, true
+			center := (startCol + endCol) / 2
+			// 中心格可能落在宽字符的续格上(Rune == 0)。续格不是一个可点击
+			// 的字符单元:发出去的坐标会偏一列,控件不响应。按 0004 §2.3
+			// "匹配跨宽字符时取其左格"回退到前导格。
+			for center > startCol && g.Cell(r, center).Rune == 0 {
+				center--
+			}
+			return r, center, true
 		}
 	}
 	return 0, 0, false

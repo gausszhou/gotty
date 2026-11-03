@@ -195,6 +195,24 @@ func (s *Session) MirrorVersion() uint64 {
 	return s.mirrorVer
 }
 
+// ScreenWithVersion returns a screen snapshot together with the mirror version
+// it reflects, both read under the same lock.
+//
+// Reading them separately is racy: an output chunk can land between Screen()
+// and MirrorVersion(), so the caller would build a frame from version N and
+// record version N+1 — and if the screen then goes idle, that chunk's dirty
+// rows are never pushed. Pairing them makes the frame's version describe its
+// content exactly.
+func (s *Session) ScreenWithVersion() (*ScreenSnapshot, uint64, error) {
+	s.mirrorMu.Lock()
+	defer s.mirrorMu.Unlock()
+	if s.mirror == nil {
+		return nil, 0, ErrMirrorDisabled
+	}
+	snap := s.mirror.Snapshot()
+	return &snap, s.mirrorVer, nil
+}
+
 // ScreenSize returns the mirror grid size (0,0 when there is no mirror).
 func (s *Session) ScreenSize() (int, int) {
 	s.mirrorMu.Lock()

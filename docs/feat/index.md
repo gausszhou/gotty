@@ -9,8 +9,8 @@
 | 0001 | [Agent 可驱动 API —— 读屏 / 等待 / 输入注入](0001-agent-driving-api.md) | `GET /screen`、`POST /wait`、`POST /keys`,让 agent 像 `tu` 一样驱动运行中的会话 | 依赖 0002 的查询应答与 `Resize`;**已实施** |
 | 0002 | [native 仿真器完整度 —— 选用现成仿真器或补齐手写引擎](0002-native-emulator-completeness.md) | 仿真层替换为 x/vt(查询应答、Resize、vttest 一致性)+ 图形提取保留 + 缺口补偿 | 无(0001 的前置);**已实施(路线 A)** |
 | 0003 | [分发与自更新 —— install.sh + gotty self update](0003-distribution-self-update.md) | 一键安装、版本单一来源、构建矩阵 + 校验和、发布工作流 | 无(独立);**已实施** |
-| 0004 | [输入侧对齐 —— 鼠标驱动 / 键名层 / 粘贴 + agent CLI 面](0004-agent-input-parity.md) | 鼠标事件构造 + 模式跟踪补位(复用 x/vt 的 X10/SGR 编码)+ `--on-text` 语义定位、`keys[]` 键名表、条件括号粘贴、`gotty mouse/press/paste/screen/…` 薄封装 | 依赖 0001 的镜像与 `/keys`;**已实施(2026-09-14;验收测试待补,见 §6)** |
-| 0005 | [观察侧与配置面补齐 —— scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述](0005-observation-and-config.md) | scrollback 读取 + 容量治理、只读镜像订阅的 `gotty monitor`、`--font`/`--font-size`、会话级 `env/cwd/term/scrollback`、`gotty usage` + `AGENTS.md` | 承接 0004 §5;`list` 端点与 daemon 自动拉起不做(需 ADR / 搁置);**已实施(2026-09-14;验收测试待补,见 §6)** |
+| 0004 | [输入侧对齐 —— 鼠标驱动 / 键名层 / 粘贴 + agent CLI 面](0004-agent-input-parity.md) | 鼠标事件构造 + 模式跟踪补位(复用 x/vt 的 X10/SGR 编码)+ `--on-text` 语义定位、`keys[]` 键名表、条件括号粘贴、`gotty mouse/press/paste/screen/…` 薄封装 | 依赖 0001 的镜像与 `/keys`;**已实施(2026-09-14);验收已补齐(2026-11-03,见 §6.3)** |
+| 0005 | [观察侧与配置面补齐 —— scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述](0005-observation-and-config.md) | scrollback 读取 + 容量治理、只读镜像订阅的 `gotty monitor`、`--font`/`--font-size`、会话级 `env/cwd/term/scrollback`、`gotty usage` + `AGENTS.md` | 承接 0004 §5;`list` 端点与 daemon 自动拉起不做(需 ADR / 搁置);**已实施(2026-09-14);验收已补齐(2026-11-03,见 §6.3)** |
 | 0006 | [UI Token 与组件规格 —— 颜色 / 尺寸 / 控件收敛](0006-ui-token-and-component-spec.md) | token 层补齐尺寸/间距/圆角/字号 + 共享控件 + 焦点环,页签「同底色 + 顶部 1px 强调条」、终端面同色、空态与弹窗规格 | 无(独立);**已实施** |
 | 0007 | [主题与语言偏好 —— 都支持「跟随系统」且默认跟随](0007-theme-and-language-preference.md) | 两项偏好同构:`值 \| 值 \| system` 三选一、默认 system、持久化**偏好本身**、系统变化实时跟随 | 无(独立);**已实施** |
 | 0008 | [TUI 验收测试 —— gotty run + gotty-tui-test skill](0008-tui-test-skill.md) | `gotty run` 建会话并打印 id;可安装 skill:隔离服务 + shell/jq harness 模板 + 失败取证 + 完成标准;CI 跑模板防腐烂 | 依赖 0004/0005 的驱动原语;`list`/场景运行器不做;**已实施(2026-11-01)** |
@@ -29,8 +29,11 @@
 > 语言的"跟随"活不过一次手点),详见各文档的实施记录。
 >
 > 0004 与 0005 于 2026-09-14 随 PR #1(`feat/agent-api`)落地:功能可用,
-> 但两文 §4 的增量测试与 e2e 尚未补齐(见各自 §6 的实施记录),状态记为
-> "已实施、验收未补齐"。
+> 但两文 §4 的增量测试与 e2e 当时没有进仓库。2026-11-03 补齐:单测覆盖鼠标
+> 逐字节/语义定位/条件粘贴/mouse state、scrollback/monitor/per-session 配置/字体,
+> e2e 落在 `scripts/e2e/agent-api.sh` 并接入 CI;补齐过程中顺带修了 6 个真实缺陷
+> (scrollback 无上限、monitor 快照与版本非原子、纯 resize 不可见、monitor 空帧
+> 空转、宽字符续列越界、drag 后光标不更新),详见各自 §6.3。
 >
 > 0008 于 2026-11-01 落地:补上 agent 建会话的 `gotty run`,并把"给任意 TUI
 > 写 shell/jq 验收测试"的流程做成可安装 skill(`gotty skill`);模板由 CI 的

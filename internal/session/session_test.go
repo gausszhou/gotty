@@ -515,6 +515,31 @@ func TestSessionResizeSyncsMirror(t *testing.T) {
 	}
 }
 
+// TestSessionResizeBumpsMirrorVersion 验证两件事:
+//   - 真实尺寸变化推进 MirrorVersion —— 否则 monitor 的"版本未变就跳过快照"
+//     会让"只 resize、无输出"的变化永远到不了订阅者;
+//   - 同尺寸的冗余 resize 不推进版本 —— 否则每个 tick 都要白做一次全量快照。
+func TestSessionResizeBumpsMirrorVersion(t *testing.T) {
+	mirror := &fakeMirror{}
+	sess, _ := newMirrorSession(t, mirror)
+
+	before := sess.MirrorVersion()
+	if err := sess.Resize(100, 40); err != nil {
+		t.Fatal(err)
+	}
+	after := sess.MirrorVersion()
+	if after <= before {
+		t.Fatalf("MirrorVersion = %d after resize, want > %d", after, before)
+	}
+
+	if err := sess.Resize(100, 40); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.MirrorVersion(); got != after {
+		t.Fatalf("redundant resize bumped MirrorVersion %d -> %d", after, got)
+	}
+}
+
 // 查询应答回写:无客户端附着且 answerQueries 开启时,镜像的应答写回 PTY;
 // 附着客户端(浏览器自行应答)或 --answer-queries=false 时不写。
 func TestOutputPumpAnswersWhenUnattached(t *testing.T) {
