@@ -1,6 +1,6 @@
 # 优化 5:观察侧与配置面补齐 —— scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述
 
-> 状态:**待实施**(2026-08-30;承接 [0004](0004-agent-input-parity.md) §5 的"范围外"清单)
+> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收测试未补齐**(2026-08-30;承接 [0004](0004-agent-input-parity.md) §5 的"范围外"清单)
 >
 > 背景:0004 把 `tu` 的**输入侧**(鼠标 / 键名 / 粘贴)补齐后,`tu` 剩下的能力
 > 缺口全部落在**观察侧与配置面**:`monitor`(终端内 30fps 观察器)、`scrollback`
@@ -18,6 +18,10 @@
 >
 > 实施前已核对上游源码(`charmbracelet/x/vt`、`charmbracelet/ultraviolet`),下面
 > 每条设计都标注了可复用的现成 API 与需要自补的部分。
+>
+> 实施摘要(2026-09-14):scrollback 读取与容量开关、只读 `monitor`、`--font`/`--font-size`、
+> 会话级 `env/cwd/term/scrollback`、`gotty usage` + `AGENTS.md` 均已落地,细节与偏差见 §6;
+> §4 的单测、e2e 与 README/指南更新尚未完成。
 
 ## 1. 现状盘点
 
@@ -126,7 +130,9 @@
 - **仓库内 `AGENTS.md`**:说明"什么时候该用 GoTTY"(需要真实终端渲染的程序:
   vim/htop/mc/dialog 安装器)、最短示例、指向 `gotty usage`;
   可选再加 `CLAUDE.md` 同内容。
-- 可选交付形态:做成可安装的 skill(`gotty-drive`),把 `usage` 文本作为 skill 正文。
+- 可选交付形态:**已落地为 [`gotty-tui-test` skill(0008)](0008-tui-test-skill.md)**。正文
+  不是 `usage` 的副本,而是"测试流程 + 可执行 harness 模板 + 真实坑";`gotty skill`
+  负责打印 / 安装,`usage` 仍是命令全集。
 
 ## 3. 涉及文件
 
@@ -180,3 +186,42 @@
 4. **内嵌 CJK 字体(若不采用子集化)** —— 与"单二进制自包含"的体积承诺冲突,先只做 `--font`。
 5. **monitor 的服务端渲染/视频流** —— 差分脏行已经够用,服务端不做逐帧图像编码。
 6. **UTF-8(`?1005`)/ urxvt(`?1015`)鼠标协议** —— 见 0004 §5.8,归 0004 的范围外。
+
+## 6. 实施记录(2026-09-14,PR #1 `feat/agent-api`)
+
+五项全部落地,`go build ./...` / `go test ./...` 通过;§4 的增量测试与 e2e 同样
+没有落库(见 6.3)。
+
+### 6.1 落地内容
+
+| 设计条目 | 落地 | 位置 |
+|---|---|---|
+| §2.1 scrollback | `serve --scrollback N`(默认 1000,`0` 关闭);`GET /screen?part=scrollback&lines=N`(尾部优先);备用屏返回 `alternate_screen: true`;关闭或 `--mirror=false` 时 503;`png` 明确拒绝(400) | `internal/capture/scrollback.go`、`internal/api/agent_handler.go`、`internal/api/options.go` |
+| §2.2 monitor | `GET /ws?session_id=X&mode=mirror`:只读、不 attach、不抢占、不写 PTY;脏行 JSON `MirrorDiff`(帧类型 `'7'`)按节拍推送,`fps` 夹在 1–30;无镜像时以 WebSocket `1007` 关闭并说明原因 | `internal/api/monitor_ws.go`、`internal/terminal/protocol.go` |
+| §2.3 CJK 栅格化 | `--font <TTF/OTF>` + `--font-size`;文件缺失/解析失败直接报错,不静默回退;不内嵌 CJK 子集、不做 emoji 彩色字形 | `internal/capture/render.go`、`internal/api/options.go` |
+| §2.4 per-session 配置 | 创建请求支持 `env/cwd/term/scrollback`;`cwd` 必须存在且是目录、`env` 仅接受 `K=V`(名字 `[A-Za-z_][A-Za-z0-9_]*`)、`term` 无控制字符且 ≤64B、`scrollback >= 0`;上限 256 条 / 64KiB | `internal/api/session_handler.go`、`internal/session` |
+| §2.5 agent 自描述 | `gotty usage`(给 LLM 的精简速查表,与 `--help` 分工)+ 仓库根 `AGENTS.md` | `cmd/usage.go`、`AGENTS.md` |
+
+### 6.2 与设计的偏差
+
+- **monitor 是单会话**:`--session` 只接受一个 id,没有"方向键在 `--session a,b,c` 之间
+  切换";输出只有脏行文本/JSON,没有品红虚拟光标叠印。
+- **monitor 帧率**:服务端默认/上限均为 30fps,CLI `--fps` 默认 10。
+- **monitor 的"镜像关闭"不是 503**:它是 WebSocket 通道,无镜像时以 `1007` 关闭并
+  附带原因;§4 验收里写的"统一 503"只对 `scrollback` 成立。
+- **全局 `--env` 未落地**:设计里的"`Options.Env` 补 `flagName` + 可重复 `--env K=V`"
+  没有实现,目前只有会话级 `env` 注入;`internal/terminal/options.go` 的注释仍写着
+  "由可重复的 `--env K=V` 提供",与现状不符,待修。
+- **`list` / daemon / 内嵌 CJK / emoji** 按 §5 保持搁置。
+
+### 6.3 未完成的验收(§4)与文档同步
+
+- scrollback:行转 `Grid` 的文本/JSON、宽字符、颜色、超长行、`lines` 尾部优先、
+  备用屏、`--scrollback=0`、容量上限;
+- monitor:脏行正确性、0 订阅者零成本、断连后 goroutine 不泄漏、与 attach 共存零抢占;
+- per-session:`env/cwd/term/scrollback` 的生效与 400 校验(含 Windows);
+- 字体:`--font` 的非 tofu 渲染与"文件不存在必须报错";
+- §4 的 4 条 e2e,以及第 4 条"`usage`/`AGENTS.md` 示例进 CI"的验收;
+- **文档同步**:README/README.zh-CN 的选项表与 `gotty run` / `gotty skill` 说明、
+  以及 `apps/docs/guide/usage.md` 的命令/端点/选项均已由
+  [0008](0008-tui-test-skill.md) 补齐。

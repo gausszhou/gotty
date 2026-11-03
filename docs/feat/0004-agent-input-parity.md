@@ -1,6 +1,6 @@
 # 优化 4:输入侧对齐 —— 鼠标驱动 / 键名层 / 粘贴 + agent CLI 面
 
-> 状态:**待实施**(对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 二次调研,2026-08-30)
+> 状态:**已实施(2026-09-14,PR #1 `feat/agent-api`);验收测试未补齐**(对标 [flipbit03/terminal-use](https://github.com/flipbit03/terminal-use) 二次调研,2026-08-30)
 >
 > 背景:0001 落地了"看屏 / 等文字 / 发字节"三个 agent 驱动原语,但 `tu` 的
 > **输入侧**还剩三块没对齐,且当时被显式划出范围(0001 §5):鼠标
@@ -21,6 +21,9 @@
 > 实施前已核对 `x/vt` 源码:鼠标 X10/SGR 两路编码与模式跟踪**上游已有**
 > (`vt/mouse.go` 的 `SendMouse`、`vt/csi_mode.go` 的 `isModeSet`),本优化因此
 > 从"自写状态机 + 三协议编码器"收缩为"事件构造 + 未导出的模式查询补位"。
+>
+> 实施摘要(2026-09-14):鼠标、键名层、条件括号粘贴、CLI 薄封装、`status` 元数据与
+> PNG 光标叠印均已落地,细节与偏差见 §6;§4 的单测与 e2e 尚未落库。
 
 ## 1. 现状盘点
 
@@ -223,3 +226,45 @@
 8. **UTF-8(`?1005`)/ urxvt(`?1015`)/ SGR-pixel 鼠标协议** —— 上游 `SendMouse` 明确
    标为 TODO,且这三者现实中极少有 TUI 使用;`--force` 场景统一按 SGR 发字节即可,
    真需要时再补自家编码。
+
+## 6. 实施记录(2026-09-14,PR #1 `feat/agent-api`)
+
+功能全部落地,`go build ./...` 与 `go test ./...` 通过;但 §4 的**增量验收测试没有
+跟着落库**(见 6.3),所以状态记为"已实施、验收未补齐"。
+
+### 6.1 落地内容
+
+| 设计条目 | 落地 | 位置 |
+|---|---|---|
+| §2.1 模式跟踪 + 合成状态 | 镜像跟踪 `?9/?1000/?1001/?1002/?1003/?1006/?2004`,记录虚拟光标、按住按钮与最后一次事件 | `internal/capture/mouse.go`、`emulator.go` |
+| §2.2 X10/SGR 编码 | 复用 `ansi.EncodeMouseButton` + `MouseX10`/`MouseSgr`;越界 400;未启用鼠标模式 409,`force` 走 SGR;`clicks` 连击、`drag` 插值 | 同上 |
+| §2.3 语义定位 | `--on-text`/`--on-regex` + `match_index`,取匹配的**中心格**,宽字符取左格 | `internal/capture/locate.go` |
+| §2.4 键名层 | `internal/keys`:`Enter/Tab/Escape/Backspace/方向/F1–F12/Ctrl/Alt/Shift` 全表,未知键名报错并列出候选 | `internal/keys/keys.go` |
+| §2.5 条件括号粘贴 | `POST /keys {"paste":…}`;仅镜像跟踪到 `?2004` 时包 `ESC[200~…201~`,未启用原样写入,`force_paste` 强制包装 | `internal/api/agent_handler.go`、`internal/session` |
+| §2.6 CLI | `gotty screen/wait/type/press/paste/mouse/cursor/resize/signal/status`(0005 又加了 `scrollback/monitor/usage`);TTY→人类文本,否则单行 JSON | `cmd/agent.go` |
+| §2.7 PNG 光标叠印 | `GET /screen?format=png&mouse_cursor=1` 与 `gotty screen --mouse-cursor` | `internal/capture/render.go` |
+| §2.8 status 元数据 | `exit_code`、`cols`、`rows` | `internal/session/session.go` |
+
+### 6.2 与设计的偏差
+
+- **`mouse state` 落成 `gotty cursor`**:API 是 `GET /api/sessions/{id}/mouse`,CLI 没有
+  叫 `mouse state` 的子命令,而是同级 `gotty cursor`;状态字段本身与 §2.1 一致。
+- **`scroll` 挂在 `mouse` 下**:实际形态 `gotty mouse scroll up|down`,与 §2.6 的子命令
+  清单一致,但不是独立的 `gotty scroll`。
+- **`list` / daemon / `?1005`/`?1015`/SGR-pixel** 按 §5 保持不做。
+
+### 6.3 未完成的验收(§4)
+
+以下测试**在仓库里不存在**(全仓 `_test.go` 中 grep 无命中;`go test ./...` 全绿只
+说明这些路径没被覆盖):
+
+- 鼠标 X10 / SGR 逐字节断言、修饰位、多击、拖拽插值点集;
+- `--on-text` / `--on-regex` 的重复匹配、`match_index`、宽字符、未命中、越界;
+- `?2004` 开 / 关 / `force_paste` 三个分支;
+- `mouse state` 的空会话与已开启两种形态;
+- §4 的 4 条 agent e2e(`mc` 点击、`vim` 键名退出、条件粘贴、409/`--force`)——
+  现有 `scripts/e2e/` 只有浏览器侧的 `manifest-flow.mjs` / `resilience.mjs`。
+
+键名层有 `internal/keys/keys_test.go` 两个用例(命名键 + 可打印字符),覆盖了 §2.4 的
+主路径;`input` 老路径的回归由 `internal/api/agent_handler_test.go` 的
+`TestAgentKeysEcho` / `TestAgentKeysBase64` 覆盖。

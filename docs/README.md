@@ -9,7 +9,7 @@
 |---|---|---|---|
 | [`adr/`](adr/) | 决策记录 | 已确定的技术决策与理由(含被否决的备选) | `NNNN-主题.md`,编号递增 |
 | [`design/`](design/) | 设计文档 | 架构 / 功能 / 协议的完整设计方案(已落地或部分落地) | 按主题命名 |
-| [`feat/`](feat/) | 优化提案 | 待实施的优化改动(含对标调研结论) | `NNNN-主题.md` + `index.md` 索引 |
+| [`feat/`](feat/) | 优化提案 | 优化改动(含对标调研结论;已实施与待实施均在此,状态见各文档头部) | `NNNN-主题.md` + `index.md` 索引 |
 | [`fix/`](fix/) | 修复记录 | 已修复问题的现象 / 根因 / 修复 / 提交 | `index.md` 汇总 |
 | [`guide/`](guide/) | 操作指南 | 流程性说明(测试、部署、协作) | 按主题命名 |
 
@@ -27,7 +27,7 @@
 |---|---|---|
 | [`feat-architecture.md`](design/feat-architecture.md) | 现代化重构设计(多会话 / REST / 二进制 WS / 前端现代化) | 已落地 |
 | [`capture-design.md`](design/capture-design.md) | capture 命令设计方案(M1–M4 里程碑) | M1–M3 已实现,M4 待实施 |
-| [`ws-multiplex.md`](design/ws-multiplex.md) | WebSocket 连接复用与二进制路由协议 | 搁置 |
+| [`ws-multiplex.md`](design/ws-multiplex.md) | WebSocket 连接复用与二进制路由协议 | 已落地(见 0005 的 monitor 订阅) |
 
 ### 优化提案 — `docs/feat/`
 
@@ -37,10 +37,11 @@
 | [`0001-agent-driving-api.md`](feat/0001-agent-driving-api.md) | Agent 可驱动 API:读屏 / 等待 / 输入注入 | 已实施 |
 | [`0002-native-emulator-completeness.md`](feat/0002-native-emulator-completeness.md) | native 仿真器完整度:查询应答与缺失 CSI 对齐 | 已实施(路线 A) |
 | [`0003-distribution-self-update.md`](feat/0003-distribution-self-update.md) | 分发与自更新:install.sh + gotty self update | 已实施 |
-| [`0004-agent-input-parity.md`](feat/0004-agent-input-parity.md) | 输入侧对齐:鼠标驱动 / 键名层 / 粘贴 + agent CLI 面 | 待实施 |
-| [`0005-observation-and-config.md`](feat/0005-observation-and-config.md) | 观察侧与配置面补齐:scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述 | 待实施 |
+| [`0004-agent-input-parity.md`](feat/0004-agent-input-parity.md) | 输入侧对齐:鼠标驱动 / 键名层 / 粘贴 + agent CLI 面 | 已实施(验收测试待补) |
+| [`0005-observation-and-config.md`](feat/0005-observation-and-config.md) | 观察侧与配置面补齐:scrollback / monitor / CJK 栅格化 / per-session 配置 / agent 自描述 | 已实施(验收测试待补) |
 | [`0006-ui-token-and-component-spec.md`](feat/0006-ui-token-and-component-spec.md) | UI Token 与组件规格:颜色 / 尺寸 / 控件收敛(对齐 VSCode Dark/Light Modern) | 已实施 |
 | [`0007-theme-and-language-preference.md`](feat/0007-theme-and-language-preference.md) | 主题与语言偏好:都支持「跟随系统」且默认跟随 | 已实施 |
+| [`0008-tui-test-skill.md`](feat/0008-tui-test-skill.md) | TUI 验收测试:`gotty run` + `gotty-tui-test` skill(harness 模板 / 失败取证 / CI 防腐) | 已实施 |
 
 ### 修复记录 — `docs/fix/`
 
