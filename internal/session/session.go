@@ -165,6 +165,14 @@ type Session struct {
 	mirrorCols int
 	mirrorRows int
 
+	// captureMu guards the attached-engine request/response pair (see
+	// capture.go): at most one capture is in flight, and the last successful
+	// result is kept for GET /captures/latest.
+	captureMu     sync.Mutex
+	captureWaiter chan captureReply
+	captureChunks []string
+	captureLatest *CaptureResult
+
 	// answerQueries gates the mirror's terminal-query answers: they are
 	// written back into the PTY only when it is set AND no browser client
 	// is attached (an attached xterm answers queries itself; double
@@ -801,6 +809,14 @@ func (s *Session) masterToSlave(ctx context.Context, conn io.ReadWriter, opts At
 		case terminal.Ping:
 			if _, err := conn.Write(terminal.EncodePong()); err != nil {
 				return ErrClientClosed
+			}
+
+		case terminal.CaptureResult:
+			// Answer to a CaptureRequest sent by Session.Capture. A malformed
+			// frame is ignored rather than fatal: it must not tear down an
+			// otherwise healthy attachment (the waiter times out instead).
+			if frame, err := terminal.DecodeCaptureResult(message.Payload); err == nil {
+				s.resolveCapture(frame)
 			}
 
 		case terminal.ResizeTerminal:

@@ -197,6 +197,11 @@ func (server *Server) setupHandlers() http.Handler {
 	apiMux.HandleFunc("POST /api/sessions/{id}/mouse", server.handleMouse)
 	apiMux.HandleFunc("GET /api/sessions/{id}/mouse", server.handleMouseState)
 
+	// REST API — attached capture engine (M4): the browser composites, the
+	// server relays the request and stores the latest result.
+	apiMux.HandleFunc("POST /api/sessions/{id}/capture", server.handleCaptureSession)
+	apiMux.HandleFunc("GET /api/sessions/{id}/captures/latest", server.handleLatestCapture)
+
 	// REST API — deployment-wide page title
 	apiMux.HandleFunc("GET /api/title", server.handleGetTitle)
 	apiMux.HandleFunc("PUT /api/title", server.handlePutTitle)

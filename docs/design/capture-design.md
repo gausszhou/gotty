@@ -1,8 +1,8 @@
 # GoTTY Capture 命令设计方案
 
 > 状态：**M1（native 文本）、M2（native 图片/PNG）、M3（browser 引擎 +
-> `/capture/:sid` 渲染页 + 前端图片）已实现**；M4（attached 0x37/0x38、
-> `POST /api/capture`、`--keys` 交互）待实施。
+> `/capture/:sid` 渲染页 + 前端图片）、M4（attached 引擎 + 前端合成截屏 +
+> `POST /api/sessions/:id/capture` + `--keys` 交互）均已实现**（M4 于 2026-11-04）。
 >
 > **使用推荐：M3 优先、M2 兜底** —— 像素级渲染（真实字体/CJK/emoji、
 > sixel/iTerm2 图片的正确形态）用 `gotty capture --engine browser --format png`;
@@ -65,7 +65,7 @@ Playwright 类比：
 |---|---|---|---|---|
 | **browser**（推荐像素） | chromedp 驱动真实 `/#/capture/:sid` 页面截图（M3 已实现） | 100% 浏览器所见 | Chrome/Chromium（`--browser-path` 可复用系统 Chrome） | 像素级保真、CJK/emoji、截图存证 |
 | **native**（兜底） | Go 进程内：PTY + VT 仿真 + 图形协议解码 + 光栅化（M1/M2 已实现） | 高（文本+图片协议） | 无浏览器、无 Node | 无人值守、CI、LLM 自动化、kitty 图片 |
-| **attached**（M4，可选） | 在线浏览器 0x37/0x38 协议快照 | 100% | 需客户端在线 + 前端合成截屏 | 巡检、远程查看当前屏幕 |
+| **attached**（M4，可选） | 在线浏览器 CaptureRequest/Result 协议快照 | 100% | 需客户端在线 + 前端合成截屏 | 巡检、远程查看当前屏幕 |
 
 > **能力差异（重要）**：浏览器路径的图片渲染依赖 `@xterm/addon-image`，
 > 支持 **sixel 与 iTerm2 inline**；**kitty 图形协议只有 native 引擎支持**。
@@ -222,22 +222,29 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
   不变），M3 起加载 image addon。
 - **只读语义**：不发输入（仅 resize+ping）；临时 server 不带 `-w`。
 
-## 8. attached 引擎（M4，可选）
+## 8. attached 引擎（M4，已实现 2026-11-04）
 
 复用**在线真人浏览器**做像素级快照（服务端发信号 → 客户端合成回传），零 Chromium。
-因需要 JS 侧读 canvas（受 preserveDrawingBuffer 限制）与整棵 DOM 合成，前端改造
-比 browser 引擎大，故放 M4：
 
 - **协议**（`internal/terminal/protocol.go` 扩展帧表）：
-  - S→C `0x37` CaptureRequest（含可选项 `{include_selection}`）；
-  - C→S `0x37` CaptureResult（PNG bytes 或 JSON）。
-- **会话层**：`Session.Capture(wait)` —— 锁内取当前 conn 写 0x37 并注册 waiter；
-  `masterToSlave` 收到 0x38 时 resolve；带超时。
-- **REST**：`POST /api/sessions/:id/capture`（触发并阻塞返回结果）；
-  `GET /api/sessions/:id/captures/latest`。
-- **前端**：`WebglAddon(true)`（恢复 preserveDrawingBuffer）+ `.terminal` 整树合成
-  （WebGL canvas + 图片 overlay）暴露 `capture()`；`ws.ts` 处理 0x37/0x38。
-- **驱动**：`gotty capture --engine attached --session-id xxx [--wait-ms]`。
+  - S→C `CaptureRequest = 'C'`（payload 为 `{"include_selection":bool}`）；
+  - C→S `CaptureResult = 'c'`（JSON，见下）。
+  - 初稿写的 `0x37`/`0x38` 不成立：`0x37`('7') 已被 MirrorDiff 占用，实际取
+    帧表里空着的 `'C'`/`'c'`。
+- **分片**：路由帧的 payload 长度字段只有 2 字节（≤65535），而整屏 PNG 的 base64
+  通常是几百 KiB。CaptureResult 因此按 24000 字符切片（`seq`/`total`/`data`），
+  服务端按序拼接后再 base64 解码；`MaxCaptureChunks=1024` 兜住异常客户端。
+- **会话层**：`Session.Capture(ctx, opts)` —— 取当前 `conn` 写 CaptureRequest 并
+  注册 waiter，`masterToSlave` 收到 CaptureResult 时装配并 resolve；带超时
+  （默认 10s）、无附着者 409、并发占用 429、客户端报错原样上抛。
+- **REST**：`POST /api/sessions/:id/capture`（触发并阻塞返回结果，`?format=png`
+  直接返回 PNG 字节，默认 JSON + base64）；`GET /api/sessions/:id/captures/latest`。
+- **前端**：`WebglAddon(true)`（恢复 preserveDrawingBuffer，否则 drawImage 拿到
+  空白缓冲）+ 把 `.terminal` 下所有 canvas 按 DOM 顺序合成到离屏画布，暴露
+  `capture()`；`session-channel.ts` 处理 CaptureRequest 并按 24000 字符分片回传。
+- **驱动**：`gotty capture --engine attached --session-id xxx [--wait-ms]
+  [--keys Escape,Enter]`。`--keys` 在截图前经 `POST /keys` 发按键，让"点开菜单
+  再截图"这类交互可复现。
 
 > 冲突处理：快照由**服务端内建动作**发起（发当前附着者、存结果），CLI 只触发 +
 > REST 取回，不抢附着、不动"单客户端 + 抢占"会话模型。
@@ -257,7 +264,7 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 | **M1** | native 文本 | `--engine native --format text/json/html`；依赖 runewidth | ✅ 已实现 |
 | **M2** | native 图片 | graphics.go（kitty → sixel → iterm2）+ `--format png` + `images[]`；依赖 go-sixel | ✅ 已实现 |
 | **M3** | browser 引擎 + 路由 | vue-router、`/capture/:sid`、`ws.ts onReady`、临时 server 驱动、chromedp；前端 `@xterm/addon-image`（sixel/iTerm2） | ✅ 已实现 |
-| **M4** | attached / API / 交互 | 0x37/0x38 + 前端合成截屏；`POST /api/capture`；`--keys` 交互输入 | ⏳ 待实施 |
+| **M4** | attached / API / 交互 | `CaptureRequest/CaptureResult`（分片）+ 前端 canvas 合成；`POST /api/sessions/:id/capture` + `captures/latest`；`--keys` 交互 | ✅ 已实现 |
 
 ## 11. 测试与验收
 
@@ -280,15 +287,15 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 |---|---|
 | `cmd/root.go` | 注册 `capture` 子命令 |
 | `internal/capture/*`（新） | emulator/graphics/render/driver；浏览器引擎在 `internal/browser`（M3） |
-| `internal/terminal/protocol.go` | （M4）0x37/0x38 帧 |
-| `internal/session/session.go` | （M4）Capture waiter |
-| `internal/api/session_handler.go` | （M4）capture REST 端点 |
+| `internal/terminal/protocol.go` | （M4）`CaptureRequest`/`CaptureResult` 帧 + 分片 |
+| `internal/session/capture.go`（新） | （M4）Capture waiter + 分片装配 + latest |
+| `internal/api/capture_handler.go`（新） | （M4）`POST /capture` 与 `GET /captures/latest` |
 | `apps/web/package.json` | + vue-router（M3）；+ @xterm/addon-image（M3） |
 | `apps/web/src/main.ts` | 注册 router：`/` → App，`/capture/:sid` → CaptureView |
 | `apps/web/src/components/CaptureView.vue`（新） | 截图专用渲染页 |
-| `apps/web/src/utils/ws.ts` | + `onReady` hook（M3）；0x37/0x38（M4） |
+| `apps/web/src/utils/ws.ts` / `session-channel.ts` | + `onReady` hook（M3）；CaptureRequest/Result 与分片（M4） |
 | `apps/web/src/components/Terminal.vue` | （M3）+ image addon；（M4）+ `WebglAddon(true)` 与 `capture()` |
-| `docs/design/ws-multiplex.md` / `README.md` | 帧表补 0x37/0x38（M4） |
+| `docs/design/ws-multiplex.md` / `README.md` | 帧表补 `CaptureRequest`/`CaptureResult`（M4） |
 
 复用不动：`App.vue`、`TerminalPane.vue`、`utils/api.ts`（getSession/createSession）、
 `utils/manifest.ts`（CaptureView 显式不依赖）。
@@ -297,7 +304,7 @@ fallback）；hash 路由（`/#/capture/<sid>`）后端零改动。二期若要�
 
 1. **native 优先**：无人值守、无浏览器/Node 依赖，符合 gotty 单二进制哲学。
 2. **browser = 真实页面元素截图**：零渲染器改造（合成器截图不受
-   preserveDrawingBuffer 限制），保真 100%；0x37/0x38 不作为首版。
+   preserveDrawingBuffer 限制），保真 100%；attached 协议不作为首版（M4 才补）。
 3. **hash 路由**：静态服务精确路由无 fallback → 零后端改动；history 模式二期。
 4. **chromedp 而非 Playwright**：保持 Go 进程内的驱动；`--browser-path` 复用系统
    Chrome 可跳过下载。

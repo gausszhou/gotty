@@ -12,6 +12,8 @@ import {
     MSG_ATTACH_OK,
     MSG_ATTACH_ERR,
     MSG_EVENT,
+    MSG_CAPTURE_REQUEST,
+    MSG_CAPTURE_RESULT,
     EVENT_PREEMPTED,
     EVENT_DESTROYED,
     saneSize,
@@ -27,6 +29,9 @@ const REPLAY_GATE_MAX_MS = 2000
 // 收到 MSG_REPLAY_DONE 后,xterm 对重放字节流的解析是异步的;解析完成
 // (onWriteParsed)才开启上行,此 600ms 为二次兜底。
 const REPLAY_PARSE_MAX_MS = 600
+// CAPTURE_CHUNK:每个 CaptureResult 帧携带的 base64 字符数。路由帧 payload
+// 上限 64 KiB,留足 JSON 头余量后取 24000。
+const CAPTURE_CHUNK = 24000
 
 // SessionChannel 是一条逻辑会话通道的浏览器侧桥接:它绑定一个 TermHandle
 // (xterm 能力),把服务端帧翻译成终端写/标题/握手事件,把终端输入/尺寸翻译成
@@ -140,6 +145,9 @@ class SessionChannel {
             case MSG_EVENT:
                 this.onEvent(payload)
                 break
+            case MSG_CAPTURE_REQUEST:
+                this.onCaptureRequest()
+                break
             default:
                 logger.debug('mux', 'unhandled session frame 0x%s (sid=%s)', type.toString(16), this.sid)
         }
@@ -192,6 +200,37 @@ class SessionChannel {
                     ? 'Session is already attached by another client'
                     : 'Session ended'
             this.hooks.onDisconnect?.(msg)
+        }
+    }
+
+    // onCaptureRequest:attached 截图引擎的服务端请求(capture-design.md §8)。
+    // 合成当前终端视图并回传;失败必须显式回 error,否则服务端只能等到超时。
+    //
+    // 路由帧 payload 上限 64 KiB,整屏 PNG 的 base64 往往远超它,所以按
+    // CAPTURE_CHUNK 切片,服务端按 seq 顺序拼接后解码。
+    private onCaptureRequest(): void {
+        if (this.closed) {
+            return
+        }
+        let png: string | null = null
+        try {
+            png = this.term.capture()
+        } catch (e) {
+            logger.warn('mux', 'capture failed (sid=%s): %s', this.sid, String(e))
+        }
+        if (!png) {
+            this.mux.send(this.sid, MSG_CAPTURE_RESULT, JSON.stringify({ error: 'capture unavailable' }))
+            return
+        }
+        const { columns, rows } = this.term.info()
+        const total = Math.max(1, Math.ceil(png.length / CAPTURE_CHUNK))
+        for (let seq = 0; seq < total; seq++) {
+            const data = png.slice(seq * CAPTURE_CHUNK, (seq + 1) * CAPTURE_CHUNK)
+            this.mux.send(
+                this.sid,
+                MSG_CAPTURE_RESULT,
+                JSON.stringify({ seq, total, data, cols: columns, rows }),
+            )
         }
     }
 

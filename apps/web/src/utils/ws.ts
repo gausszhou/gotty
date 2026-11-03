@@ -14,6 +14,7 @@ const MSG_INPUT = 0x31 // '1'
 const MSG_PING = 0x32 // '2'
 const MSG_RESIZE = 0x33 // '3'
 const MSG_ATTACH = 0x41 // 'A'
+const MSG_CAPTURE_RESULT = 0x63 // 'c'  —— 对 CaptureRequest 的应答(JSON + base64 PNG)
 const MSG_DETACH = 0x44 // 'D'
 
 // 服务端(→客户端):输出 / 心跳回应 / 窗口标题 / 偏好 / 重连秒数 / 握手完成 /
@@ -27,6 +28,7 @@ const MSG_REPLAY_DONE = 0x36 // 历史重放已移除;该帧仍是"输入可上�
 const MSG_ATTACH_OK = 0x61 // 'a'
 const MSG_ATTACH_ERR = 0x62 // 'b'
 const MSG_EVENT = 0x45 // 'E'
+const MSG_CAPTURE_REQUEST = 0x43 // 'C'  —— 服务端要求浏览器合成截图(attached 引擎)
 
 // 事件状态码('E' 帧 payload)
 const EVENT_PREEMPTED = 0x01 // 被其他客户端抢占
@@ -49,6 +51,9 @@ export interface TermHandle {
     onResize(callback: (columns: number, rows: number) => void): void
     // 解析完成事件(返回退订函数):输入上行等待重放解析完再开启。
     onWriteParsed(callback: () => void): (() => void) | undefined
+    // 合成当前终端视图为 PNG,返回 base64(不含 data: 前缀);失败返回 null。
+    // attached 截图引擎(服务端 CaptureRequest)依赖它。
+    capture(): string | null
 }
 
 export interface WSHooks {
@@ -160,6 +165,8 @@ export {
     MSG_ATTACH_OK,
     MSG_ATTACH_ERR,
     MSG_EVENT,
+    MSG_CAPTURE_REQUEST,
+    MSG_CAPTURE_RESULT,
     EVENT_PREEMPTED,
     EVENT_DESTROYED,
     ROUTE_SESSION_ID_LEN,

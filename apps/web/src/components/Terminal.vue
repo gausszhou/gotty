@@ -123,9 +123,13 @@ onMounted(() => {
 
   // WebGL 渲染器:GPU 不可用(无显卡/远程桌面/部分 headless)时抛错,
   // 自动回退到 xterm 内置的 DOM 渲染器。
+  //
+  // preserveDrawingBuffer=true:attached 截图引擎要把 WebGL canvas
+  // drawImage 到离屏画布合成 PNG,而默认(交换式)缓冲在合成帧之后即失效,
+  // drawImage 只能拿到空白。代价是每帧多一次缓冲保留,可接受。
   if (!props.domRenderer) {
     try {
-      term.loadAddon(new WebglAddon())
+      term.loadAddon(new WebglAddon(true))
     } catch {
       // 回退 DOM 渲染器即可,无需处理
     }
@@ -246,6 +250,52 @@ function close() {
   term?.dispose()
 }
 
+// capture:把终端视图合成为一张 PNG,返回 base64(不含 data: 前缀),供
+// attached 截图引擎回传(capture-design.md §8)。
+//
+// xterm 的 WebGL 画布与 image addon 的 overlay 是各自独立的 canvas,浏览器
+// 的"元素截图"不存在于 JS 侧,所以只能按 DOM 顺序把每一层 drawImage 到同一张
+// 离屏画布上。WebGL 画布必须以 preserveDrawingBuffer=true 创建(见 setup),
+// 否则 drawImage 取到的是一张已被清空的缓冲。
+function capture(): string | null {
+  const root = terminalEl.value
+  if (!root) return null
+  const rect = root.getBoundingClientRect()
+  const width = Math.max(1, Math.round(rect.width))
+  const height = Math.max(1, Math.round(rect.height))
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  // 背景先铺底色:终端主题色是 CSS 背景,不在 canvas 里。
+  const bg = getComputedStyle(root).backgroundColor
+  if (bg && bg !== 'rgba(0, 0, 0, 0)') {
+    ctx.fillStyle = bg
+    ctx.fillRect(0, 0, width, height)
+  }
+
+  root.querySelectorAll('canvas').forEach((layer) => {
+    const el = layer as HTMLCanvasElement
+    const r = el.getBoundingClientRect()
+    try {
+      ctx.drawImage(el, r.left - rect.left, r.top - rect.top, r.width, r.height)
+    } catch (e) {
+      // 单层画不出来(跨源/已被释放)不应让整次截图失败。
+      console.error('capture: layer skipped', e)
+    }
+  })
+
+  try {
+    return canvas.toDataURL('image/png').split(',')[1] ?? null
+  } catch (e) {
+    console.error('capture: toDataURL failed', e)
+    return null
+  }
+}
+
 defineExpose({
   info,
   write,
@@ -259,6 +309,7 @@ defineExpose({
   deactivate,
   fit,
   close,
+  capture,
 })
 </script>
 

@@ -1,10 +1,16 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,6 +42,8 @@ func buildCaptureCmd() *cobra.Command {
 		noCells     bool
 		browserPath string
 		sessionID   string
+		serverURL   string
+		keysBefore  []string
 	)
 
 	cmd := &cobra.Command{
@@ -49,7 +57,8 @@ func buildCaptureCmd() *cobra.Command {
 			"  gotty capture --format json -- chafa --format symbols logo.png\n" +
 			"  gotty capture --format html --out out.html -- \\\n" +
 			"      'printf \\033[31mRED\\033[0m'\n" +
-			"  gotty capture --engine browser --format png --out shot.png -- htop",
+			"  gotty capture --engine browser --format png --out shot.png -- htop\n" +
+			"  gotty capture --engine attached --session-id $ID --out shot.png",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch engine {
@@ -87,14 +96,21 @@ func buildCaptureCmd() *cobra.Command {
 				}
 				log.Printf("capture(browser): session=%s reason=%s duration=%v", res.SessionID, res.StopReason, res.Duration)
 				return writeCaptureBytes(outPath, res.PNG)
+			case "attached":
+				if format != "png" {
+					return fmt.Errorf("engine attached renders --format png only")
+				}
+				return runCaptureAttached(resolveServerURL(serverURL), sessionID, keysBefore, captureOptions{
+					waitMs: waitMs, timeout: timeout, outPath: outPath,
+				})
 			default:
-				return fmt.Errorf("unknown engine %q (want native|browser)", engine)
+				return fmt.Errorf("unknown engine %q (want native|browser|attached)", engine)
 			}
 		},
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&engine, "engine", "native", "rendering engine: native | browser (browser needs Chrome/Chromium, renders --format png)")
+	flags.StringVar(&engine, "engine", "native", "rendering engine: native | browser | attached (browser needs Chrome/Chromium; attached asks an already-attached browser)")
 	flags.StringVar(&format, "format", "text", "result format: text | json | html | png")
 	flags.IntVar(&cols, "cols", 120, "terminal columns")
 	flags.IntVar(&rows, "rows", 30, "terminal rows")
@@ -106,7 +122,9 @@ func buildCaptureCmd() *cobra.Command {
 	flags.StringVar(&outPath, "out", "", "output path ('-' or empty = stdout)")
 	flags.BoolVar(&noCells, "no-cells", false, "omit per-cell styles from --format json")
 	flags.StringVar(&browserPath, "browser-path", "", "engine browser: path to a Chrome/Chromium binary (default: search PATH)")
-	flags.StringVar(&sessionID, "session-id", "", "engine browser: attach an existing session instead of creating one")
+	flags.StringVar(&sessionID, "session-id", "", "engine browser/attached: session to capture instead of creating one")
+	flags.StringVar(&serverURL, "server", "", "engine attached: GoTTY server URL (default http://127.0.0.1:9049 or $GOTTY_SERVER)")
+	flags.StringSliceVar(&keysBefore, "keys", nil, "engine attached: key names to press before capturing (comma separated, e.g. Escape,Enter)")
 
 	return cmd
 }
@@ -170,6 +188,86 @@ func runCaptureNative(format string, args []string, o captureOptions) error {
 		return writeCaptureBytes(o.outPath, data)
 	}
 	return nil
+}
+
+// runCaptureAttached asks the browser that is already attached to a running
+// session to composite its terminal view (capture-design.md §8). No Chromium
+// and no extra client: the server sends a CaptureRequest on the attached
+// channel and the page answers with a PNG, so the session's attachment is
+// untouched.
+func runCaptureAttached(baseURL, sessionID string, keys []string, o captureOptions) error {
+	if sessionID == "" {
+		return fmt.Errorf("engine attached needs --session-id: a browser must already be attached to that session")
+	}
+	base := strings.TrimRight(baseURL, "/")
+	httpc := &http.Client{Timeout: o.timeout}
+	path := base + "/api/sessions/" + url.PathEscape(sessionID)
+
+	// --wait-ms: 先等输出静默,与 native/browser 的稳定判定对齐。
+	// best-effort:--mirror=false 时该端点 503,不应阻断截图。
+	if o.waitMs > 0 {
+		_, _ = postJSON(httpc, path+"/wait", map[string]int{
+			"quiet_ms":   o.waitMs,
+			"timeout_ms": int(o.timeout / time.Millisecond),
+		})
+	}
+
+	// --keys:截图前先发按键(关掉对话框/切到目标页面),复用 agent keys 端点。
+	// 这是"attached 交互"那一半:没有它,想截一张"点开菜单后"的图就只能
+	// 手工先按一下,截图时机不可复现。
+	if len(keys) > 0 {
+		if _, err := postJSON(httpc, path+"/keys", map[string]interface{}{"keys": keys}); err != nil {
+			return fmt.Errorf("send keys before capture: %w", err)
+		}
+	}
+
+	body, err := postJSON(httpc, path+"/capture", map[string]int{
+		"timeout_ms": int(o.timeout / time.Millisecond),
+	})
+	if err != nil {
+		return err
+	}
+	var out struct {
+		PNG  string `json:"png"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return fmt.Errorf("invalid capture response: %w", err)
+	}
+	data, err := base64.StdEncoding.DecodeString(out.PNG)
+	if err != nil {
+		return fmt.Errorf("invalid capture payload: %w", err)
+	}
+	log.Printf("capture(attached): session=%s %dx%d %d bytes", sessionID, out.Cols, out.Rows, len(data))
+	return writeCaptureBytes(o.outPath, data)
+}
+
+// postJSON POSTs a JSON body and returns the raw response body, turning a
+// non-2xx status into an error that carries the server's message.
+func postJSON(c *http.Client, endpoint string, body interface{}) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	return data, nil
 }
 
 func firstOr(args []string, i int, dflt string) string {

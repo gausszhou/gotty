@@ -120,7 +120,7 @@ persisted per device in `localStorage`); new sessions append at the end.
 ## `gotty capture` — end-to-end terminal testing
 
 The Playwright-of-terminals command: run a command, wait for the render to
-settle, take the rendered result away. Two engines:
+settle, take the rendered result away. Three engines:
 
 ### Browser engine (recommended for pixels) — `--engine browser`
 
@@ -133,6 +133,22 @@ points at an existing binary).
 ```sh
 gotty capture --engine browser --format png --out shot.png -- htop
 gotty capture --engine browser --format png -- sh -c 'ls -la | head -20'
+```
+
+### Attached engine (a browser is already watching) — `--engine attached`
+
+Asks the browser that is **already attached** to a running session to
+composite its terminal view (WebGL canvas + image overlay) and send the PNG
+back. No Chromium, no extra client, and the session's attachment is left
+alone — so it captures exactly what a human currently sees, including state
+you cannot reproduce from a command. Needs someone attached; otherwise the
+endpoint answers `409`.
+
+```sh
+ID=$(gotty run -- top)   # or open the session in the web UI
+gotty capture --engine attached --session-id "$ID" --out shot.png
+# press keys first, then capture (reproducible "open the menu, then shoot")
+gotty capture --engine attached --session-id "$ID" --keys Escape,Enter
 ```
 
 ### Native engine (fallback, no browser) — default

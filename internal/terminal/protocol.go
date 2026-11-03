@@ -20,6 +20,10 @@ const (
 	Ping = '2'
 	// ResizeTerminal notifies the server that the terminal size has changed.
 	ResizeTerminal = '3'
+	// CaptureResult (C→S) is the attached client's answer to a CaptureRequest:
+	// a JSON CaptureResultFrame carrying a base64 PNG (or an error). It only
+	// ever travels on an attached channel — a monitor never receives a request.
+	CaptureResult = 'c'
 )
 
 // Message types sent from the server to the client.
@@ -50,6 +54,15 @@ const (
 	// screen mirror instead of the PTY stream and must not preempt the
 	// attached client. Payload is a JSON MirrorDiffFrame.
 	MirrorDiff = '7'
+	// CaptureRequest (S→C) asks the attached client to composite its terminal
+	// view (WebGL canvas + image overlay) and answer with CaptureResult. The
+	// attached engine (capture --engine attached) uses it to get a pixel-level
+	// snapshot from a real browser without spawning Chromium. Payload is a
+	// JSON CaptureRequestFrame.
+	//
+	// Note: the design note called these 0x37/0x38, but 0x37 is already
+	// MirrorDiff; 'C'/'c' are the free slots in the frame table.
+	CaptureRequest = 'C'
 )
 
 // Multiplexed WebSocket routing message types (ws-multiplex.md). A single
@@ -186,6 +199,74 @@ func DecodeMirrorDiff(payload []byte) (MirrorDiffFrame, error) {
 	return frame, nil
 }
 
+// CaptureRequestFrame is the payload of a CaptureRequest frame.
+type CaptureRequestFrame struct {
+	// IncludeSelection asks the client to include its current text selection
+	// in the composite (not implemented by the first client version; kept in
+	// the protocol so the request shape does not have to change later).
+	IncludeSelection bool `json:"include_selection,omitempty"`
+}
+
+// CaptureResultFrame is the payload of one CaptureResult frame.
+//
+// A routed frame caps its payload at MaxRoutePayload (65535 bytes), while a
+// full-screen PNG is routinely several hundred KiB once base64-encoded. The
+// client therefore splits the base64 text into chunks and sends Total frames;
+// Data carries chunk number Seq (0-based). The server concatenates them in
+// order and only then decodes. Error is set on the first (and only) frame of
+// a failed capture; Total is 0 in that case.
+type CaptureResultFrame struct {
+	Seq   int    `json:"seq,omitempty"`
+	Total int    `json:"total,omitempty"`
+	Data  string `json:"data,omitempty"`
+	Error string `json:"error,omitempty"`
+	Cols  int    `json:"cols,omitempty"`
+	Rows  int    `json:"rows,omitempty"`
+}
+
+// MaxCaptureChunks bounds how many CaptureResult frames one capture may use,
+// so a buggy or hostile client cannot make the server accumulate forever.
+const MaxCaptureChunks = 1024
+
+// EncodeCaptureRequest builds a CaptureRequest frame.
+func EncodeCaptureRequest(frame CaptureRequestFrame) ([]byte, error) {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return nil, err
+	}
+	return EncodeFrame(CaptureRequest, payload), nil
+}
+
+// DecodeCaptureRequest parses the payload of a CaptureRequest frame.
+func DecodeCaptureRequest(payload []byte) (CaptureRequestFrame, error) {
+	var frame CaptureRequestFrame
+	if len(payload) == 0 {
+		return frame, nil
+	}
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return CaptureRequestFrame{}, fmt.Errorf("invalid capture request payload: %w", err)
+	}
+	return frame, nil
+}
+
+// EncodeCaptureResult builds a CaptureResult frame.
+func EncodeCaptureResult(frame CaptureResultFrame) ([]byte, error) {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return nil, err
+	}
+	return EncodeFrame(CaptureResult, payload), nil
+}
+
+// DecodeCaptureResult parses the payload of a CaptureResult frame.
+func DecodeCaptureResult(payload []byte) (CaptureResultFrame, error) {
+	var frame CaptureResultFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return CaptureResultFrame{}, fmt.Errorf("invalid capture result payload: %w", err)
+	}
+	return frame, nil
+}
+
 // ClientMessage is a decoded frame received from the client.
 type ClientMessage struct {
 	Type    byte
@@ -201,7 +282,7 @@ func DecodeClientFrame(frame []byte) (ClientMessage, error) {
 	}
 
 	switch frame[0] {
-	case Input, Ping, ResizeTerminal:
+	case Input, Ping, ResizeTerminal, CaptureResult:
 		return ClientMessage{Type: frame[0], Payload: frame[1:]}, nil
 	default:
 		return ClientMessage{}, fmt.Errorf("%w: unknown message type `%c`", ErrInvalidMessage, frame[0])
