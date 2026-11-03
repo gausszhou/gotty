@@ -56,6 +56,13 @@ func AttachFlags(cmd *cobra.Command, options ...interface{}) (mappings map[strin
 				} else {
 					flags.Int(flagName, field.Interface().(int), flagDescription)
 				}
+			case reflect.Slice:
+				// 目前只支持 []string(可重复 flag,如 `--env K=V`)。
+				// StringArray 没有带短名的变体,flagSName 在此忽略。
+				if field.Type().Elem().Kind() != reflect.String {
+					continue
+				}
+				flags.StringArray(flagName, field.Interface().([]string), flagDescription)
 			}
 		}
 	}
@@ -90,6 +97,12 @@ func ApplyFlags(cmd *cobra.Command, mappings map[string]string, options ...inter
 				case reflect.Int:
 					intVal, _ := strconv.Atoi(cmd.Flags().Lookup(flagName).Value.String())
 					v = reflect.ValueOf(intVal)
+				case reflect.Slice:
+					vals, err := cmd.Flags().GetStringArray(flagName)
+					if err != nil {
+						continue
+					}
+					v = reflect.ValueOf(vals)
 				}
 				field.Set(v)
 			}
@@ -138,6 +151,16 @@ func ApplyEnv(cmd *cobra.Command, mappings map[string]string, options ...interfa
 						return fmt.Errorf("invalid int value for env %s: %s", envName, raw)
 					}
 					v = reflect.ValueOf(n)
+				case reflect.Slice:
+					// 逗号分隔的列表,例如 GOTTY_ENV="FOO=bar,BAZ=qux"。
+					parts := strings.Split(raw, ",")
+					vals := make([]string, 0, len(parts))
+					for _, p := range parts {
+						if p = strings.TrimSpace(p); p != "" {
+							vals = append(vals, p)
+						}
+					}
+					v = reflect.ValueOf(vals)
 				}
 				field.Set(v)
 			}

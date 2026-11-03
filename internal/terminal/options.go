@@ -16,9 +16,11 @@ const (
 // Options configures how Terminals are created.
 type Options struct {
 	// Env is a list of additional environment variables, e.g. ["FOO=bar"].
-	// It is fed by the repeatable `--env K=V` flag and by the per-session
-	// `env` creation parameter (the latter wins, appended later).
-	Env []string `json:"env"`
+	// It is fed by the repeatable `serve --env K=V` flag (or GOTTY_ENV as a
+	// comma-separated list) and by the per-session `env` creation parameter.
+	// The per-session entries are appended after these, so they win: buildEnv
+	// keeps the last occurrence of a duplicated key.
+	Env []string `json:"env" flagName:"env" flagDescribe:"Extra environment variable K=V for sessions (repeatable; session-level env overrides it)"`
 
 	// WorkDir is the default working directory for sessions; empty means the
 	// user's home directory. A session-level `cwd` overrides it.

@@ -183,14 +183,30 @@ func buildEnv(command string, extra []string) []string {
 		}
 	}
 
+	// 同名覆盖项只保留最后一次:全局 `serve --env` 在前、会话级 `env` 在后,
+	// 所以会话级胜出;再据此剥离继承环境里的同名变量,避免出现两份同名项
+	// (POSIX 未定义重复项的取值,glibc 取第一个,反而会让全局值赢)。
+	extras = dedupeEnv(extras)
+	overridden := make(map[string]struct{}, len(extras))
+	for _, kv := range extras {
+		if key, _, ok := strings.Cut(kv, "="); ok {
+			overridden[key] = struct{}{}
+		}
+	}
+
 	original := os.Environ()
 	env := make([]string, 0, len(original)+len(extras)+4)
 	for _, kv := range original {
 		// 颜色相关的继承变量一律剥离,统一以本层默认/覆盖值为准
-		if !strings.HasPrefix(kv, "TERM=") &&
-			!strings.HasPrefix(kv, "COLORTERM=") {
-			env = append(env, kv)
+		if strings.HasPrefix(kv, "TERM=") || strings.HasPrefix(kv, "COLORTERM=") {
+			continue
 		}
+		if key, _, ok := strings.Cut(kv, "="); ok {
+			if _, dup := overridden[key]; dup {
+				continue
+			}
+		}
+		env = append(env, kv)
 	}
 	env = append(env, "TERM="+termValue)
 	env = append(env, "COLORTERM="+colorTermValue)
@@ -207,6 +223,31 @@ func buildEnv(command string, extra []string) []string {
 	}
 
 	return append(env, extras...)
+}
+
+// dedupeEnv keeps only the last occurrence of each variable, preserving the
+// order of the surviving entries. Entries without "=" (malformed) are kept
+// verbatim: the child process decides what to make of them.
+func dedupeEnv(env []string) []string {
+	seen := make(map[string]struct{}, len(env))
+	out := make([]string, 0, len(env))
+	for i := len(env) - 1; i >= 0; i-- {
+		kv := env[i]
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			out = append(out, kv)
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, kv)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 // isBash reports whether the command is the bash shell (interactive

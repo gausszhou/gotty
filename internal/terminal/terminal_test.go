@@ -72,6 +72,34 @@ func TestBuildEnvLaterOverrideWins(t *testing.T) {
 	}
 }
 
+// TestBuildEnvDedupesOverrides 验证同名覆盖项在最终环境里只出现一次,且
+// "后追加者胜"——全局 `serve --env` 在前、会话级 `env` 在后,所以会话级赢。
+// 同时继承环境里的同名变量必须被剥离:否则子进程会看到两份 FOO,而 glibc
+// 的 getenv 取第一个,全局值反而压过会话级值。
+func TestBuildEnvDedupesOverrides(t *testing.T) {
+	t.Setenv("FOO", "inherited")
+
+	env := buildEnv("/bin/sh", []string{"FOO=global", "FOO=session", "BAR=1", "BAR=2"})
+
+	if got := envValue(t, env, "FOO"); got != "session" {
+		t.Fatalf("FOO = %q, want session (later entry wins)", got)
+	}
+
+	counts := make(map[string]int, len(env))
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		counts[key]++
+	}
+	for _, key := range []string{"FOO", "BAR", "TERM", "COLORTERM"} {
+		if counts[key] != 1 {
+			t.Fatalf("%s appears %d times in the child env, want exactly 1", key, counts[key])
+		}
+	}
+}
+
 // TestBuildEnvKeepsExtras 验证普通 env 条目原样保留并去重。
 func TestBuildEnvKeepsExtras(t *testing.T) {
 	env := buildEnv("/bin/sh", []string{"FOO=bar", "EDITOR=vim"})
